@@ -1,0 +1,18 @@
+[package]
+name = "notia-js"
+description = "Community plugins for Notia: JavaScript plugins loaded at runtime from the vault, like Obsidian's."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gpui-kit.workspace = true
+log.workspace = true
+notia-plugin.workspace = true
+notify.workspace = true
+rquickjs = { version = "0.14", features = ["loader"] }
+serde.workspace = true
+serde_json.workspace = true
+smol = "2"

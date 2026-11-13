@@ -1,0 +1,16 @@
+[package]
+name = "notia-plugins"
+description = "The core plugins and bundled themes of Notia."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono.workspace = true
+gpui-kit.workspace = true
+log.workspace = true
+notia-plugin.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

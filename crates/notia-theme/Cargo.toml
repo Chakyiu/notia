@@ -1,0 +1,16 @@
+[package]
+name = "notia-theme"
+description = "Theme plugins for Notia: the theme file format, the theme catalog and applying themes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gpui-kit.workspace = true
+log.workspace = true
+notify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol = "2"

@@ -1,0 +1,13 @@
+[package]
+name = "notia-core"
+description = "Vault, note parsing, link index and search for Notia. No UI dependencies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

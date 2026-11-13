@@ -1,0 +1,42 @@
+[package]
+name = "notia"
+description = "A plugin-based note taking app."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+env_logger.workspace = true
+gpui-kit.workspace = true
+log.workspace = true
+serde_json.workspace = true
+notia-js.workspace = true
+notia-plugin.workspace = true
+notia-plugins.workspace = true
+notia-workspace.workspace = true
+
+[dev-dependencies]
+# Turns on the headless app context and renderer of the GPUI that gpui-kit
+# re-exports; gpui-kit's own `test-support` also pulls in GPUI Fast.
+gpui = { package = "gpui-pre", version = "=0.3.12", features = [
+    "test-support",
+] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = [
+    "test-support",
+] }
+serde_json.workspace = true
+tempfile = "3"
+
+# Runs in a headless app, which needs the main thread.
+[[test]]
+name = "community_plugins"
+harness = false
+
+# Renders the main screens with the GPU into PNGs. Not part of `cargo test`:
+# run it with `cargo test -p notia --test screenshots`.
+[[test]]
+name = "screenshots"
+harness = false
+test = false

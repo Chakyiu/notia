@@ -16,7 +16,7 @@ Notia needs Rust 1.85 or newer, for the 2024 edition.
 On Debian and Ubuntu, the GUI libraries are:
 
 ```
-sudo apt-get install pkg-config libwayland-dev libxkbcommon-dev libx11-dev libxcb1-dev libvulkan-dev libssl-dev cmake g++ libfontconfig1-dev
+sudo apt-get install pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcb1-dev libvulkan-dev libssl-dev cmake g++ libfontconfig1-dev
 ```
 
 Release images go to `dist/`:
@@ -30,6 +30,23 @@ scripts/package.sh all          # every image this machine can produce
 ```
 
 A macOS, Windows, or Linux build links that system's libraries, so each image is produced on that system. From macOS or Windows, the Linux image is built in Docker when Docker is running. The Windows image is built by running `scripts/package.sh windows` on Windows. The macOS app requires macOS 12 or newer.
+
+Pushing a version tag builds all three and publishes them as a GitHub release. The tag has to match `version` in `Cargo.toml`, so version `0.1.0` is tag `v0.1.0`.
+
+```
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release contains:
+
+| File | System |
+| --- | --- |
+| `Notia-<version>-macos-<arch>.dmg` | macOS, Apple silicon on the GitHub runner |
+| `Notia-<version>-linux-<arch>.tar.gz` | Linux. The binary links the system Wayland, X11, and font libraries |
+| `Notia-<version>-windows-<arch>.zip` | Windows |
+
+The macOS app is signed ad hoc, and the Windows executable is unsigned, so the system asks for confirmation before opening them. Running the workflow by hand, without a tag, builds the same images and keeps them as workflow artifacts.
 
 ## Writing
 

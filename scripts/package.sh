@@ -120,7 +120,7 @@ EOF
 
 # --- Linux -----------------------------------------------------------------
 
-linux_deps='pkg-config libwayland-dev libxkbcommon-dev libx11-dev libxcb1-dev libvulkan-dev libssl-dev cmake g++ libfontconfig1-dev'
+linux_deps='pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcb1-dev libvulkan-dev libssl-dev cmake g++ libfontconfig1-dev'
 
 package_linux_native() {
     require_host linux
@@ -220,11 +220,12 @@ package_linux() {
 
 package_windows() {
     require_host windows
-    local stage archive binary
+    local arch stage archive binary stage_path archive_path
+    arch="$(host_arch)"
     build_release
     binary="target/release/notia.exe"
     [[ -f "$binary" ]] || die "missing $binary"
-    stage="$dist/Notia-${version}-windows-x86_64"
+    stage="$dist/Notia-${version}-windows-${arch}"
     rm -rf "$stage"
     mkdir -p "$stage"
     cp "$binary" "$stage/notia.exe"
@@ -233,7 +234,10 @@ package_windows() {
     if command -v zip >/dev/null 2>&1; then
         (cd "$dist" && zip -r "$(basename "$archive")" "$(basename "$stage")")
     elif command -v powershell.exe >/dev/null 2>&1; then
-        powershell.exe -NoProfile -Command "Compress-Archive -Path '$stage' -DestinationPath '$archive' -Force"
+        # Git Bash paths are not paths PowerShell can open.
+        stage_path="$(cygpath -w "$stage" 2>/dev/null || printf '%s' "$stage")"
+        archive_path="$(cygpath -w "$archive" 2>/dev/null || printf '%s' "$archive")"
+        powershell.exe -NoProfile -Command "Compress-Archive -Path '$stage_path' -DestinationPath '$archive_path' -Force"
     else
         die "install zip or PowerShell to pack the Windows image"
     fi

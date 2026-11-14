@@ -283,6 +283,33 @@ impl Workspace {
                 .or(first);
         }
         self.panels = panels;
+        self.attach_toolbars(cx);
+    }
+
+    fn editor_toolbar_views(&self) -> Vec<AnyView> {
+        self.panels
+            .iter()
+            .filter(|panel| panel.placement() == PanelPlacement::Editor)
+            .filter_map(|panel| self.panel_views.get(panel.id()).map(|(_, view)| view.clone()))
+            .collect()
+    }
+
+    /// Puts editor toolbars on the open note and takes them off the others.
+    fn attach_toolbars(&mut self, cx: &mut Context<Self>) {
+        let toolbars = self.editor_toolbar_views();
+        let active = self.active_tab;
+        for (ix, tab) in self.tabs.iter().enumerate() {
+            if Some(ix) != active {
+                tab.editor
+                    .update(cx, |editor, cx| editor.set_toolbars(Vec::new(), cx));
+            }
+        }
+        if let Some(ix) = active
+            && let Some(tab) = self.tabs.get(ix)
+        {
+            tab.editor
+                .update(cx, |editor, cx| editor.set_toolbars(toolbars, cx));
+        }
     }
 
     fn sidebar(&self, placement: PanelPlacement) -> &Sidebar {
@@ -468,6 +495,7 @@ impl Workspace {
         self.active_tab = Some(ix);
         let editor = tab.editor.clone();
         editor.update(cx, |editor, cx| editor.focus(window, cx));
+        self.attach_toolbars(cx);
         self.publish_active_note(cx);
         self.schedule_layout_save(cx);
         cx.notify();
@@ -552,6 +580,39 @@ impl Workspace {
     pub(crate) fn insert_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor().cloned() {
             editor.update(cx, |editor, cx| editor.insert_text(text, window, cx));
+        }
+    }
+
+    pub(crate) fn selection(&self, cx: &App) -> notia_plugin::workspace::SelectionText {
+        self.active_editor()
+            .map(|editor| editor.read(cx).selection_context(cx))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn replace_selection(
+        &mut self,
+        text: &str,
+        expand_before: usize,
+        expand_after: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editor) = self.active_editor().cloned() {
+            editor.update(cx, |editor, cx| {
+                editor.replace_selection(text, expand_before, expand_after, window, cx)
+            });
+        }
+    }
+
+    pub(crate) fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor().cloned() {
+            editor.update(cx, |editor, cx| editor.undo(window, cx));
+        }
+    }
+
+    pub(crate) fn redo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor().cloned() {
+            editor.update(cx, |editor, cx| editor.redo(window, cx));
         }
     }
 
@@ -1060,33 +1121,18 @@ impl Render for Workspace {
             theme.foreground,
             theme.font_family.clone(),
         );
-        let (status_bar_bg, border) = (theme.sidebar, theme.border);
+        let status_bar_bg = theme.sidebar;
 
-        let editor_bars: Vec<_> = self
-            .panels
-            .iter()
-            .filter(|panel| panel.placement() == PanelPlacement::Editor)
-            .filter_map(|panel| self.panel_views.get(panel.id()).map(|(_, view)| view.clone()))
-            .collect();
         let note = match self.active_editor() {
             Some(editor) => editor.clone().into_any_element(),
             None => self.render_empty_state(window, cx).into_any_element(),
         };
-        let main = v_flex()
+        let main = div()
             .flex_1()
             .min_w_0()
-            .min_h_0()
             .h_full()
             .bg(background)
-            .children(editor_bars.into_iter().map(|view| {
-                div()
-                    .w_full()
-                    .flex_none()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(view)
-            }))
-            .child(div().flex_1().min_h_0().w_full().child(note));
+            .child(note);
 
         v_flex()
             .id("workspace")

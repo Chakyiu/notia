@@ -213,6 +213,35 @@ impl WorkspaceHandle for Handle {
         });
     }
 
+    fn selection(&self, cx: &App) -> notia_plugin::workspace::SelectionText {
+        cx.try_global::<WorkspaceSlot>()
+            .and_then(|slot| slot.workspace.upgrade())
+            .map(|workspace| workspace.read(cx).selection(cx))
+            .unwrap_or_default()
+    }
+
+    fn replace_selection(
+        &self,
+        text: &str,
+        expand_before: usize,
+        expand_after: usize,
+        _: &mut Window,
+        cx: &mut App,
+    ) {
+        let text = text.to_string();
+        with_workspace(cx, move |this, window, cx| {
+            this.replace_selection(&text, expand_before, expand_after, window, cx)
+        });
+    }
+
+    fn undo(&self, _: &mut Window, cx: &mut App) {
+        with_workspace(cx, |this, window, cx| this.undo(window, cx));
+    }
+
+    fn redo(&self, _: &mut Window, cx: &mut App) {
+        with_workspace(cx, |this, window, cx| this.redo(window, cx));
+    }
+
     fn new_note(&self, folder: Option<VaultPath>, _: &mut Window, cx: &mut App) {
         with_workspace(cx, move |this, window, cx| {
             this.new_note(folder, window, cx)

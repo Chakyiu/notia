@@ -5,7 +5,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Editor, EditorState, Input, InputEvent, InputState, Paste, Position, TabSize},
+    input::{Editor, EditorState, Input, InputEvent, InputState, Paste, Position, Redo, TabSize, Undo},
     menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
     text::{MarkdownExtensions, TextView, TextViewState},
@@ -47,6 +47,8 @@ pub struct NoteEditor {
     reading_stale: bool,
     save_task: Option<Task<()>>,
     error: Option<SharedString>,
+    /// Format bars contributed by plugins, drawn above the title.
+    toolbars: Vec<AnyView>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -100,8 +102,16 @@ impl NoteEditor {
             reading_stale: false,
             save_task: None,
             error,
+            toolbars: Vec::new(),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Replaces the format bars shown above the title. Only the visible note
+    /// should hold them, because a view can have one parent.
+    pub fn set_toolbars(&mut self, toolbars: Vec<AnyView>, cx: &mut Context<Self>) {
+        self.toolbars = toolbars;
+        cx.notify();
     }
 
     pub fn path(&self) -> &VaultPath {
@@ -185,6 +195,74 @@ impl NoteEditor {
         self.editor
             .update(cx, |editor, cx| editor.insert(text.to_string(), window, cx));
         self.mark_edited(cx);
+    }
+
+    /// The selected words and up to two characters on either side of them.
+    pub fn selection_context(&self, cx: &App) -> notia_plugin::workspace::SelectionText {
+        use notia_plugin::workspace::SelectionText;
+        let state = self.editor.read(cx);
+        let value = state.value().to_string();
+        let range = state.selected_range();
+        let start = range.start.min(value.len());
+        let end = range.end.min(value.len());
+        if !value.is_char_boundary(start) || !value.is_char_boundary(end) || start > end {
+            return SelectionText::default();
+        }
+        SelectionText {
+            text: value[start..end].to_string(),
+            before: chars_ending_at(&value, start, 2),
+            after: chars_starting_at(&value, end, 2),
+        }
+    }
+
+    /// Replaces the selection. Expands by whole characters when the marks sit
+    /// just outside the words the user selected.
+    pub fn replace_selection(
+        &mut self,
+        text: &str,
+        expand_before: usize,
+        expand_after: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode == ViewMode::Reading {
+            self.set_mode(ViewMode::Editing, window, cx);
+        }
+        let text = text.to_string();
+        self.editor.update(cx, |editor, cx| {
+            if expand_before > 0 || expand_after > 0 {
+                let value = editor.value().to_string();
+                let range = editor.selected_range();
+                let start = retreat_chars(&value, range.start, expand_before);
+                let end = advance_chars(&value, range.end, expand_after);
+                editor.set_selected_range(start..end, cx);
+            }
+            editor.replace(text, window, cx);
+        });
+        self.mark_edited(cx);
+    }
+
+    /// Undoes the last edit in the note, using the editor's own history.
+    pub fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.replay(true, window, cx);
+    }
+
+    /// Redoes the last undone edit.
+    pub fn redo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.replay(false, window, cx);
+    }
+
+    fn replay(&mut self, undo: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == ViewMode::Reading {
+            self.set_mode(ViewMode::Editing, window, cx);
+        }
+        self.editor
+            .update(cx, |editor, cx| editor.focus(window, cx));
+        if undo {
+            window.dispatch_action(Box::new(Undo), cx);
+        } else {
+            window.dispatch_action(Box::new(Redo), cx);
+        }
     }
 
     /// Writes unsaved edits to disk now.
@@ -539,6 +617,15 @@ impl Render for NoteEditor {
                             .when_some(appearance.max_width, |this, width| {
                                 this.max_w(width + inset)
                             })
+                            .children(self.toolbars.iter().map(|toolbar| {
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .flex_none()
+                                    .px_8()
+                                    .pb_2()
+                                    .child(toolbar.clone())
+                            }))
                             .child(
                                 h_flex()
                                     .w_full()
@@ -600,6 +687,54 @@ fn paste_image(
             true
         }
     }
+}
+
+fn chars_ending_at(text: &str, index: usize, count: usize) -> String {
+    let end = index.min(text.len());
+    if !text.is_char_boundary(end) {
+        return String::new();
+    }
+    let mut start = end;
+    for _ in 0..count {
+        if start == 0 {
+            break;
+        }
+        start = text[..start]
+            .char_indices()
+            .next_back()
+            .map(|(at, _)| at)
+            .unwrap_or(0);
+    }
+    text[start..end].to_string()
+}
+
+fn chars_starting_at(text: &str, index: usize, count: usize) -> String {
+    let end = advance_chars(text, index, count);
+    text.get(index.min(text.len())..end)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn retreat_chars(text: &str, index: usize, count: usize) -> usize {
+    let tail = chars_ending_at(text, index, count);
+    index.min(text.len()).saturating_sub(tail.len())
+}
+
+fn advance_chars(text: &str, index: usize, count: usize) -> usize {
+    let mut index = index.min(text.len());
+    let Some(rest) = text.get(index..) else {
+        return index;
+    };
+    let mut rest = rest;
+    for _ in 0..count {
+        let mut chars = rest.chars();
+        let Some(ch) = chars.next() else {
+            break;
+        };
+        index += ch.len_utf8();
+        rest = chars.as_str();
+    }
+    index
 }
 
 /// Draws `> [!type]` blockquotes as Obsidian-style callouts.

@@ -333,6 +333,31 @@ impl JsRuntime {
                 });
                 Ok(Value::Null)
             }
+            "workspace.selection" => {
+                let selection = workspace::selection(cx);
+                Ok(json!({
+                    "text": selection.text,
+                    "before": selection.before,
+                    "after": selection.after,
+                }))
+            }
+            "workspace.replaceSelection" => {
+                let text: String = args.get(0)?;
+                let expand_before = args.get::<Option<f64>>(1)?.unwrap_or(0.).max(0.) as usize;
+                let expand_after = args.get::<Option<f64>>(2)?.unwrap_or(0.).max(0.) as usize;
+                with_window_later(cx, move |window, cx| {
+                    workspace::replace_selection(&text, expand_before, expand_after, window, cx)
+                });
+                Ok(Value::Null)
+            }
+            "workspace.undo" => {
+                with_window_later(cx, |window, cx| workspace::undo(window, cx));
+                Ok(Value::Null)
+            }
+            "workspace.redo" => {
+                with_window_later(cx, |window, cx| workspace::redo(window, cx));
+                Ok(Value::Null)
+            }
             "workspace.revealLine" => {
                 let line = args.get::<f64>(0)?.max(0.) as usize;
                 with_window_later(cx, move |window, cx| {

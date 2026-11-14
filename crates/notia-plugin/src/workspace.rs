@@ -159,6 +159,22 @@ pub trait WorkspaceHandle {
     fn reveal_line(&self, line: usize, window: &mut Window, cx: &mut App);
     /// Inserts text at the cursor of the active note.
     fn insert_text(&self, text: &str, window: &mut Window, cx: &mut App);
+    /// The active note's selection, read during the current update.
+    fn selection(&self, cx: &App) -> SelectionText;
+    /// Replaces the active selection. `expand_before` and `expand_after` are
+    /// extra characters on either side, used to remove marks around the words.
+    fn replace_selection(
+        &self,
+        text: &str,
+        expand_before: usize,
+        expand_after: usize,
+        window: &mut Window,
+        cx: &mut App,
+    );
+    /// Undoes the last edit in the active note.
+    fn undo(&self, window: &mut Window, cx: &mut App);
+    /// Redoes the last undone edit in the active note.
+    fn redo(&self, window: &mut Window, cx: &mut App);
     /// Creates a note in `folder`, or the configured folder, and opens it.
     fn new_note(&self, folder: Option<VaultPath>, window: &mut Window, cx: &mut App);
     /// Opens the sidebar holding a panel and selects the panel.
@@ -210,6 +226,44 @@ pub fn reveal_line(line: usize, window: &mut Window, cx: &mut App) {
 pub fn insert_text(text: &str, window: &mut Window, cx: &mut App) {
     if let Some(handle) = handle(cx) {
         handle.insert_text(text, window, cx);
+    }
+}
+
+pub fn selection(cx: &App) -> SelectionText {
+    handle(cx)
+        .map(|handle| handle.selection(cx))
+        .unwrap_or_default()
+}
+
+pub fn replace_selection(
+    text: &str,
+    expand_before: usize,
+    expand_after: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if let Some(handle) = handle(cx) {
+        handle.replace_selection(text, expand_before, expand_after, window, cx);
+    }
+}
+
+/// The words selected in the active note, plus the characters beside them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SelectionText {
+    pub text: String,
+    pub before: String,
+    pub after: String,
+}
+
+pub fn undo(window: &mut Window, cx: &mut App) {
+    if let Some(handle) = handle(cx) {
+        handle.undo(window, cx);
+    }
+}
+
+pub fn redo(window: &mut Window, cx: &mut App) {
+    if let Some(handle) = handle(cx) {
+        handle.redo(window, cx);
     }
 }
 

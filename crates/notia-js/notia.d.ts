@@ -98,8 +98,8 @@ declare module "notia" {
     /** A Lucide icon name, shown in the sidebar header. */
     icon?: string;
     /**
-     * Defaults to `"right"`. `"editor"` draws the panel as a bar above the
-     * open note instead of docking it in a sidebar.
+     * Defaults to `"right"`. `"editor"` draws the panel as a single row of
+     * icons above the note title instead of docking it in a sidebar.
      */
     side?: "left" | "right" | "editor";
     /**
@@ -119,7 +119,8 @@ declare module "notia" {
   /** The building blocks of panels. */
   export const ui: {
     column(children: Child[], options?: object): Element;
-    row(children: Child[], options?: object): Element;
+    /** `wrap: false` keeps children on one line. */
+    row(children: Child[], options?: { wrap?: boolean }): Element;
     /** A small section heading, like those of the core panels. */
     heading(text: string): Element;
     text(text: string, options?: { muted?: boolean; bold?: boolean; small?: boolean }): Element;
@@ -228,6 +229,17 @@ declare module "notia" {
     newNote(folder?: string | null): void;
     /** Inserts text at the cursor of the active note. */
     insertText(text: string): void;
+    /** The selected words, and up to two characters on either side. */
+    selection(): { text: string; before: string; after: string };
+    /**
+     * Replaces the selection. `expandBefore` and `expandAfter` include marks
+     * that sit just outside the selected words.
+     */
+    replaceSelection(text: string, expandBefore?: number, expandAfter?: number): void;
+    /** Undoes the last edit in the active note. */
+    undo(): void;
+    /** Redoes the last undone edit in the active note. */
+    redo(): void;
     /** Moves the cursor of the active note to a 0-based line. */
     revealLine(line: number): void;
     /** Searches the vault, like `"tag:#ideas"` or `"meeting"`. */

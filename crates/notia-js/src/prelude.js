@@ -151,6 +151,11 @@
       openLink: (target, options = {}) => call("workspace.openLink", String(target), options),
       newNote: (folder = null) => call("workspace.newNote", folder === null ? null : String(folder)),
       insertText: (text) => call("workspace.insertText", String(text)),
+      selection: () => call("workspace.selection"),
+      replaceSelection: (text, expandBefore = 0, expandAfter = 0) =>
+        call("workspace.replaceSelection", String(text), Number(expandBefore) || 0, Number(expandAfter) || 0),
+      undo: () => call("workspace.undo"),
+      redo: () => call("workspace.redo"),
       revealLine: (line) => call("workspace.revealLine", Number(line) || 0),
       search: (query) => call("workspace.search", String(query)),
       runCommand: (id) => call("workspace.runCommand", String(id)),

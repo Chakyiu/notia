@@ -41,6 +41,10 @@ impl Render for StatusText {
 }
 
 /// An element of a panel, as made by the `ui` functions of the plugin API.
+fn wraps_by_default() -> bool {
+    true
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Node {
@@ -51,6 +55,9 @@ enum Node {
     Row {
         #[serde(default)]
         children: Vec<Node>,
+        /// When false, children stay on one line and the bar scrolls.
+        #[serde(default = "wraps_by_default")]
+        wrap: bool,
     },
     Heading {
         text: String,
@@ -157,7 +164,13 @@ impl Render for JsPanel {
             .id(SharedString::from(format!("js-panel-{}", self.id)))
             .w_full();
         if self.bar {
-            panel.flex_none().px_2().py_1().child(body).into_any_element()
+            panel
+                .flex_none()
+                .min_w_0()
+                .overflow_x_scrollbar()
+                .py_0p5()
+                .child(body)
+                .into_any_element()
         } else {
             panel
                 .size_full()
@@ -202,10 +215,10 @@ fn render_node(node: &Node, handlers: &Handlers, ids: &mut usize, cx: &App) -> A
                     .map(|child| render_node(child, handlers, ids, cx)),
             )
             .into_any_element(),
-        Node::Row { children } => h_flex()
-            .gap_2()
-            .flex_wrap()
+        Node::Row { children, wrap } => h_flex()
             .items_center()
+            .when(*wrap, |row| row.gap_2().flex_wrap())
+            .when(!*wrap, |row| row.gap_2().flex_nowrap())
             .children(
                 children
                     .iter()
@@ -247,7 +260,8 @@ fn render_node(node: &Node, handlers: &Handlers, ids: &mut usize, cx: &App) -> A
             tooltip,
             on_click,
         } => Button::new(next_id())
-            .small()
+            .when(label.is_empty(), |button| button.xsmall())
+            .when(!label.is_empty(), |button| button.small())
             .map(|button| match variant.as_deref() {
                 Some("primary") => button.primary(),
                 Some("ghost") => button.ghost(),

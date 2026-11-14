@@ -12,7 +12,8 @@ use notia_core::{EntryKind, VaultPath};
 use notia_theme::ThemeCatalog;
 
 use crate::{
-    Command, NavigationIcon, Panel, Plugin, PluginContext, PluginManifest, RibbonItem, StatusItem,
+    Command, NavigationIcon, Panel, Plugin, PluginContext, PluginManifest, RibbonItem, SettingsTab,
+    StatusItem,
     actions::{RunCommand, WORKSPACE_CONTEXT},
     context::DeactivateHook,
 };
@@ -24,6 +25,7 @@ struct Activation {
     panels: Vec<Panel>,
     status_items: Vec<StatusItem>,
     navigation_icons: Vec<NavigationIcon>,
+    settings_tabs: Vec<SettingsTab>,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
     deactivate_hooks: Vec<DeactivateHook>,
@@ -36,6 +38,7 @@ impl Activation {
         self.panels.extend(other.panels);
         self.status_items.extend(other.status_items);
         self.navigation_icons.extend(other.navigation_icons);
+        self.settings_tabs.extend(other.settings_tabs);
         self._subscriptions.extend(other._subscriptions);
         self._tasks.extend(other._tasks);
         self.deactivate_hooks.extend(other.deactivate_hooks);
@@ -227,6 +230,7 @@ impl PluginHost {
             panels,
             status_items,
             navigation_icons,
+            settings_tabs,
             themes,
             subscriptions,
             tasks,
@@ -244,6 +248,7 @@ impl PluginHost {
             panels,
             status_items,
             navigation_icons,
+            settings_tabs,
             _subscriptions: subscriptions,
             _tasks: tasks,
             deactivate_hooks,
@@ -345,6 +350,19 @@ impl PluginHost {
             .collect();
         panels.sort_by(|a, b| (a.order(), a.id()).cmp(&(b.order(), b.id())));
         panels
+    }
+
+    /// The settings tabs of the enabled plugins with the plugin that added
+    /// each, in the order the plugins were registered.
+    pub fn settings_tabs(&self) -> Vec<(PluginManifest, SettingsTab)> {
+        self.activations()
+            .flat_map(|(manifest, activation)| {
+                activation
+                    .settings_tabs
+                    .iter()
+                    .map(|tab| (manifest.clone(), tab.clone()))
+            })
+            .collect()
     }
 
     pub fn status_items(&self) -> Vec<StatusItem> {

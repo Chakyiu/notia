@@ -1,0 +1,17 @@
+{
+  "left": {
+    "open": true,
+    "width": 260.0,
+    "active": "file-explorer:files"
+  },
+  "right": {
+    "open": true,
+    "width": 280.0,
+    "active": "outline:outline"
+  },
+  "tabs": [
+    "Welcome.md"
+  ],
+  "active_tab": 0,
+  "recent": []
+}

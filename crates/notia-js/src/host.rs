@@ -11,8 +11,8 @@ use std::{
 use gpui_kit::{App, AppContext as _, Entity, component::notification::Notification};
 use notia_plugin::{
     Command, EditorChange, EditorCommand, EditorId, EditorSelection, EditorSnapshot,
-    EditorTransaction, Notia, OpenOptions, Panel, PanelPlacement, RibbonItem, StatusItem,
-    VaultModel, ViewMode,
+    EditorTransaction, Notia, OpenOptions, Panel, PanelPlacement, RibbonItem, SettingsTab,
+    StatusItem, VaultModel, ViewMode,
     core::{Vault, VaultPath},
     workspace,
 };
@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 use crate::{
     icon, offsets,
     runtime::{Contribution, JsRuntime, PanelSlot, notify, with_window_later},
+    settings::JsSettings,
     view::{JsPanel, StatusText},
 };
 
@@ -62,6 +63,16 @@ struct PanelSpec {
     title: String,
     icon: Option<String>,
     side: String,
+}
+
+#[derive(Deserialize)]
+struct SettingsTabSpec {
+    /// The view the prelude renders, `settings:<n>`.
+    id: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -157,6 +168,23 @@ impl JsRuntime {
             "showPanel" => {
                 let id = format!("{}:{}", self.plugin.id, args.get::<String>(0)?);
                 with_window_later(cx, move |window, cx| workspace::show_panel(&id, window, cx));
+                Ok(Value::Null)
+            }
+            "addSettingTab" => self.add_settings_tab(args.get(0)?),
+            "refreshSettings" => {
+                let id: String = args.get(0)?;
+                let state = self.state.borrow();
+                // Refreshing from `render` would render forever.
+                if state.rendering.as_ref() != Some(&id) {
+                    let tab = state
+                        .settings
+                        .get(&id)
+                        .cloned()
+                        .ok_or_else(|| format!("there is no settings tab “{id}”"))?;
+                    drop(state);
+                    tab.invalidate();
+                    cx.refresh_windows();
+                }
                 Ok(Value::Null)
             }
             "loadData" => self.load_data(),
@@ -260,6 +288,21 @@ impl JsRuntime {
             move |_, _| view.clone(),
         );
         self.add(Contribution::Panel(panel.with_order(ORDER)));
+        Ok(Value::Null)
+    }
+
+    fn add_settings_tab(self: &Rc<Self>, spec: SettingsTabSpec) -> Result<Value, String> {
+        let settings = Rc::new(JsSettings::new(Rc::downgrade(self), spec.id.clone()));
+        self.state
+            .borrow_mut()
+            .settings
+            .insert(spec.id.clone(), settings.clone());
+        let mut tab = SettingsTab::new(spec.id.replace(':', "-"), move |cx| settings.sections(cx))
+            .with_icon(icon(spec.icon.as_deref()));
+        if let Some(title) = spec.title {
+            tab = tab.with_title(title);
+        }
+        self.add(Contribution::SettingsTab(tab));
         Ok(Value::Null)
     }
 

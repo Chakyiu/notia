@@ -59,6 +59,11 @@ declare module "notia" {
      * elements `render` returns.
      */
     addPanel(options: PanelOptions): PanelHandle;
+    /**
+     * Adds a page of the plugin's options to Settings, listed while the
+     * plugin is enabled.
+     */
+    addSettingTab(options: SettingTabOptions): SettingTabHandle;
 
     /** Returns `ref`. Event listeners are removed on unload anyway. */
     registerEvent<T>(ref: T): T;
@@ -125,6 +130,25 @@ declare module "notia" {
     show(): void;
   }
 
+  export interface SettingTabOptions {
+    /** The page's name in Settings. Defaults to the plugin's name. */
+    title?: string;
+    /** A Lucide icon name, shown beside the name. */
+    icon?: string;
+    /**
+     * Returns the page: `ui.setting` rows, and other elements between them.
+     * `ui.heading` starts a new section. Notia calls it when the page is
+     * shown, after each change made on it, and after `refresh()`. Show the
+     * values you store: a control shows what `render` gives it.
+     */
+    render(): Element | Element[] | string | null;
+  }
+
+  export interface SettingTabHandle {
+    /** Shows values changed elsewhere, such as by a command. */
+    refresh(): void;
+  }
+
   /** The building blocks of panels. */
   export const ui: {
     column(children: Child[], options?: object): Element;
@@ -148,6 +172,29 @@ declare module "notia" {
     separator(): Element;
     /** A centered, muted message for when there is nothing to show. */
     empty(text: string): Element;
+
+    /**
+     * A row of a settings tab: a name, and a control beside it. The control
+     * is one of those below, or any element, such as a button. Settings and
+     * their controls show only at the top level of a settings tab.
+     */
+    setting(name: string, control: Child, options?: { description?: string }): Element;
+    /** A switch. */
+    toggle(value: boolean, onChange: (value: boolean) => unknown): Element;
+    /** A text field. `onChange` runs as the text changes. */
+    textInput(value: string, onChange: (value: string) => unknown): Element;
+    /** A number field that keeps the value between `min` and `max`. */
+    numberInput(
+      value: number,
+      onChange: (value: number) => unknown,
+      options?: { min?: number; max?: number; step?: number },
+    ): Element;
+    /** A menu of options: values, `[value, label]` pairs, or `{ value, label }`. */
+    dropdown(
+      value: string,
+      options: (string | [value: string, label: string] | { value: string; label: string })[],
+      onChange: (value: string) => unknown,
+    ): Element;
   };
 
   /** An element made by `ui`. */

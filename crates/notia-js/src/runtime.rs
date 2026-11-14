@@ -15,8 +15,8 @@ use gpui_kit::{
     component::{WindowExt as _, notification::Notification},
 };
 use notia_plugin::{
-    Command, Notia, Panel, PluginContext, PluginHost, RibbonItem, StatusItem, VaultEvent,
-    WorkspaceEvent, workspace,
+    Command, Notia, Panel, PluginContext, PluginHost, RibbonItem, SettingsTab, StatusItem,
+    VaultEvent, WorkspaceEvent, workspace,
 };
 use rquickjs::{
     CatchResultExt as _, Ctx, Error, Exception, Function, Module, Promise,
@@ -29,6 +29,7 @@ use crate::{
     host::{Args, note_json},
     manifest::PluginInfo,
     scope,
+    settings::JsSettings,
     view::StatusText,
 };
 
@@ -51,6 +52,7 @@ pub(crate) enum Contribution {
     RibbonItem(RibbonItem),
     Panel(Panel),
     StatusItem(StatusItem),
+    SettingsTab(SettingsTab),
 }
 
 impl Contribution {
@@ -60,6 +62,7 @@ impl Contribution {
             Self::RibbonItem(item) => ctx.add_ribbon_item(item),
             Self::Panel(panel) => ctx.add_panel(panel),
             Self::StatusItem(item) => ctx.add_status_item(item),
+            Self::SettingsTab(tab) => ctx.add_settings_tab(tab),
         }
     }
 }
@@ -78,7 +81,8 @@ pub(crate) struct HostState {
     pub(crate) pending: Vec<Contribution>,
     pub(crate) status_items: Vec<Entity<StatusText>>,
     pub(crate) panels: HashMap<String, PanelSlot>,
-    /// The panel whose `render` is running.
+    pub(crate) settings: HashMap<String, Rc<JsSettings>>,
+    /// The panel or settings tab whose `render` is running.
     pub(crate) rendering: Option<String>,
     /// The events that have listeners.
     pub(crate) listened: HashSet<String>,
@@ -239,17 +243,22 @@ impl JsRuntime {
         }
     }
 
-    /// Runs a panel's `render` and returns the elements it made, as JSON.
-    pub(crate) fn render_panel(&self, panel: &str, cx: &mut App) -> Result<String, String> {
-        self.state.borrow_mut().rendering = Some(panel.to_string());
-        let result = self.dispatch("render", panel, "", cx);
+    /// Runs the `render` of a panel or settings tab and returns the elements
+    /// it made, as JSON.
+    pub(crate) fn render_view(&self, view: &str, cx: &mut App) -> Result<String, String> {
+        self.state.borrow_mut().rendering = Some(view.to_string());
+        let result = self.dispatch("render", view, "", cx);
         self.state.borrow_mut().rendering = None;
         result?.ok_or_else(|| "The plugin was disabled.".to_string())
     }
 
-    /// Runs the click handler of a button or list item of a panel.
-    pub(crate) fn click(&self, panel: &str, handler: usize, cx: &mut App) {
-        if let Err(error) = self.dispatch("ui", panel, &handler.to_string(), cx) {
+    /// Runs a handler of an element of a view, such as a button's `onClick`
+    /// or a toggle's `onChange`, with `args`.
+    pub(crate) fn call_handler(&self, view: &str, handler: usize, args: Vec<Value>, cx: &mut App) {
+        let mut payload = vec![Value::from(handler)];
+        payload.extend(args);
+        let payload = Value::Array(payload).to_string();
+        if let Err(error) = self.dispatch("ui", view, &payload, cx) {
             self.report(&error, cx);
         }
     }

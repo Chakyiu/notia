@@ -26,6 +26,46 @@ use notia_plugin::{
     workspace,
 };
 
+const WORD_GOAL: &str = r#"
+import { Plugin, ui } from "notia";
+
+export default class WordGoal extends Plugin {
+  async onload() {
+    this.settings = Object.assign(
+      { goal: 500, unit: "words", status: true, label: "Today" },
+      await this.loadData(),
+    );
+    this.addSettingTab({
+      icon: "target",
+      render: () => [
+        ui.setting(
+          "Daily goal",
+          ui.numberInput(this.settings.goal, (goal) => this.save({ goal }), { min: 50, max: 10000, step: 50 }),
+          { description: "How much to write each day." },
+        ),
+        ui.setting(
+          "Count",
+          ui.dropdown(this.settings.unit, [["words", "Words"], ["characters", "Characters"]], (unit) =>
+            this.save({ unit }),
+          ),
+        ),
+        ui.heading("Status bar"),
+        ui.setting("Show progress", ui.toggle(this.settings.status, (status) => this.save({ status })), {
+          description: "Shows how close today's notes are to the goal.",
+        }),
+        ui.setting("Label", ui.textInput(this.settings.label, (label) => this.save({ label }))),
+        ui.setting("Progress", ui.button("Start over", () => {})),
+      ],
+    });
+  }
+
+  save(change) {
+    Object.assign(this.settings, change);
+    this.saveData(this.settings);
+  }
+}
+"#;
+
 fn main() {
     let out = std::env::var_os("NOTIA_SCREENSHOTS")
         .map(PathBuf::from)
@@ -45,6 +85,20 @@ fn main() {
         r#"{ "name": "Unfinished" }"#,
     )
     .expect("write a manifest");
+    // An enabled community plugin with a settings tab.
+    let word_goal = vault.config_dir().join("plugins/word-goal");
+    std::fs::create_dir_all(&word_goal).expect("create a plugin folder");
+    std::fs::write(
+        word_goal.join("manifest.json"),
+        r#"{ "id": "word-goal", "name": "Word goal", "version": "1.0.0" }"#,
+    )
+    .expect("write a manifest");
+    std::fs::write(word_goal.join("main.js"), WORD_GOAL).expect("write a plugin");
+    std::fs::write(
+        vault.config_dir().join("plugins.json"),
+        r#"{ "word-goal": true }"#,
+    )
+    .expect("enable the plugin");
 
     let mut cx = HeadlessAppContext::with_platform(
         gpui_kit::platform::current_platform(true).text_system(),
@@ -96,6 +150,11 @@ fn main() {
     screens.save("14-plugin-settings");
     screens.click(298., 399.);
     screens.save("15-community-plugin-settings");
+    screens.close_dialogs();
+    screens.dispatch(OpenSettings);
+    // Word goal is the only plugin settings page in this vault, under the divider.
+    screens.click(269., 443.);
+    screens.save("19-community-plugin-options");
     screens.close_dialogs();
 
     screens.dispatch(PreviewMode);

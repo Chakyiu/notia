@@ -1,14 +1,11 @@
 use std::{cell::Cell, rc::Rc};
 
-use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, WindowExt as _,
     command::{Command as CommandList, CommandItem, CommandState},
 };
 use gpui_kit::*;
-use notia_plugin::{
-    Command, Plugin, PluginContext, PluginManifest, RibbonItem, theme::ThemeCatalog,
-};
+use notia_plugin::{Command, Plugin, PluginContext, PluginManifest, theme::ThemeCatalog};
 
 pub(crate) const THEMES: &[&str] = &[
     include_str!("../themes/nord.json"),
@@ -38,15 +35,6 @@ impl Plugin for ThemeGalleryPlugin {
             Command::new("change-theme", "Change theme", pick_theme)
                 .with_icon(IconName::Palette)
                 .with_keybinding("secondary-k secondary-t"),
-        );
-        ctx.add_ribbon_item(
-            RibbonItem::new(
-                "change-theme",
-                Icon::new(Lucide::SwatchBook),
-                "Change theme",
-                pick_theme,
-            )
-            .with_order(90),
         );
         ctx.on_deactivate(|cx| ThemeCatalog::preview(None, cx));
     }

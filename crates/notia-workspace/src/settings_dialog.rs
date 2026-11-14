@@ -1,16 +1,17 @@
 //! The settings dialog.
 
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, ThemeMode, WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    button::Button,
     h_flex,
     setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use notia_plugin::{
-    AppSettings, Notia, PluginHost, PluginKind, ViewMode,
-    theme::{ColorScheme, ThemeCatalog, ThemePack, ThemeSource},
+    AppSettings, Notia, PluginHost, PluginKind, Setting, SettingControl, SettingsSection, ViewMode,
+    theme::{ColorScheme, ThemeCatalog},
 };
 
 pub(crate) fn open_settings(window: &mut Window, cx: &mut App) {
@@ -19,21 +20,130 @@ pub(crate) fn open_settings(window: &mut Window, cx: &mut App) {
     }
     window.open_dialog(cx, |dialog, window, cx| {
         let height = (window.viewport_size().height - px(120.)).min(px(680.));
-        dialog
-            .title("Settings")
-            .w(px(920.))
-            .child(
-                div()
-                    .h(height)
-                    .child(Settings::new("notia-settings").pages(vec![
-                        appearance_page(cx),
-                        editor_page(),
-                        files_page(),
-                        plugins_page(cx),
-                        about_page(cx),
-                    ])),
-            )
+        // Plugin pages come last, so enabling a plugin leaves the others in place.
+        let mut pages = vec![
+            appearance_page(cx),
+            editor_page(),
+            files_page(),
+            plugins_page(cx),
+            about_page(cx),
+        ];
+        let plugins = plugin_pages(cx);
+        if !plugins.is_empty() {
+            pages.push(plugin_separator());
+            pages.extend(plugins);
+        }
+        dialog.title("Settings").w(px(920.)).child(
+            div()
+                .h(height)
+                .child(Settings::new("notia-settings").pages(pages)),
+        )
     });
+}
+
+/// A rule between Notia's own pages and the pages plugins add. It is a page
+/// only because the settings sidebar is a list of pages; nothing selects it
+/// on purpose, and a search hides it.
+fn plugin_separator() -> SettingPage {
+    SettingPage::new("────────────────").resettable(false).group(
+        SettingGroup::new().item(SettingItem::render(|_, _, cx| {
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Settings added by plugins.")
+        })),
+    )
+}
+
+/// A page for each settings tab of an enabled plugin.
+fn plugin_pages(cx: &mut App) -> Vec<SettingPage> {
+    let tabs = PluginHost::global(cx).settings_tabs();
+    tabs.into_iter()
+        .map(|(manifest, tab)| {
+            let title = tab.title().unwrap_or(manifest.name()).clone();
+            let icon = tab
+                .icon()
+                .cloned()
+                .unwrap_or_else(|| Icon::new(Lucide::Puzzle));
+            SettingPage::new(title)
+                .icon(icon)
+                .groups(tab.build(cx).iter().map(setting_group))
+        })
+        .collect()
+}
+
+fn setting_group(section: &SettingsSection) -> SettingGroup {
+    let mut group = SettingGroup::new().items(section.items().iter().map(setting_item));
+    if let Some(title) = section.title() {
+        group = group.title(title.clone());
+    }
+    if let Some(description) = section.description() {
+        group = group.description(description.clone());
+    }
+    group
+}
+
+fn setting_item(setting: &Setting) -> SettingItem {
+    let name = setting.name().clone();
+    let item = match setting.control().clone() {
+        SettingControl::Toggle(value) => {
+            let set = value.clone();
+            SettingItem::new(
+                name,
+                SettingField::switch(
+                    move |cx: &App| value.get(cx),
+                    move |on: bool, cx: &mut App| set.set(on, cx),
+                ),
+            )
+        }
+        SettingControl::Text(value) => {
+            let set = value.clone();
+            SettingItem::new(
+                name,
+                SettingField::input(
+                    move |cx: &App| value.get(cx),
+                    move |text: SharedString, cx: &mut App| set.set(text, cx),
+                ),
+            )
+        }
+        SettingControl::Number { value, range, step } => {
+            let set = value.clone();
+            SettingItem::new(
+                name,
+                SettingField::number_input(
+                    NumberFieldOptions {
+                        min: *range.start(),
+                        max: *range.end(),
+                        step,
+                    },
+                    move |cx: &App| value.get(cx),
+                    move |number: f64, cx: &mut App| set.set(number, cx),
+                ),
+            )
+        }
+        SettingControl::Choice { value, options } => {
+            let set = value.clone();
+            SettingItem::new(
+                name,
+                SettingField::dropdown(
+                    options,
+                    move |cx: &App| value.get(cx),
+                    move |choice: SharedString, cx: &mut App| set.set(choice, cx),
+                ),
+            )
+        }
+        SettingControl::Custom(render) if name.is_empty() => {
+            SettingItem::render(move |_, window, cx| render(window, cx))
+        }
+        SettingControl::Custom(render) => SettingItem::new(
+            name,
+            SettingField::render(move |_, window, cx| render(window, cx)),
+        ),
+    };
+    match setting.description() {
+        Some(description) => item.description(description.clone()),
+        None => item,
+    }
 }
 
 fn appearance_page(cx: &App) -> SettingPage {
@@ -41,12 +151,30 @@ fn appearance_page(cx: &App) -> SettingPage {
     let errors = catalog.errors().to_vec();
     let folder = catalog.folder().map(|folder| folder.to_path_buf());
 
-    let mut themes = SettingGroup::new()
-        .title("Themes")
-        .description("Theme plugins control every color, the fonts and the note typography.");
-    for pack in catalog.packs() {
-        themes = themes.item(theme_item(pack, cx));
+    let mut options: Vec<(SharedString, SharedString)> = catalog
+        .packs()
+        .iter()
+        .map(|pack| (pack.id().clone(), pack.name().clone()))
+        .collect();
+    let selected = catalog.appearance().theme.clone();
+    if !options.iter().any(|(id, _)| id.as_ref() == selected) {
+        options.insert(0, (selected.clone().into(), selected.into()));
     }
+    let mut themes = SettingGroup::new().title("Themes").item(
+        SettingItem::new(
+            "Theme",
+            SettingField::scrollable_dropdown(
+                options,
+                |cx: &App| ThemeCatalog::global(cx).appearance().theme.clone().into(),
+                |theme: SharedString, cx: &mut App| {
+                    ThemeCatalog::update_appearance(cx, |appearance| {
+                        appearance.theme = theme.to_string()
+                    });
+                },
+            ),
+        )
+        .description("Colors, fonts and note typography."),
+    );
     themes = themes.item(
         SettingItem::new(
             "Themes folder",
@@ -214,116 +342,6 @@ fn appearance_page(cx: &App) -> SettingPage {
             ]),
             themes,
         ])
-}
-
-fn theme_item(pack: std::rc::Rc<ThemePack>, cx: &App) -> SettingItem {
-    let manifest = pack.manifest().clone();
-    let source = match pack.source() {
-        ThemeSource::Bundled => "Bundled".to_string(),
-        ThemeSource::Plugin(plugin) => {
-            let name = PluginHost::global(cx)
-                .plugins()
-                .find(|(manifest, _)| manifest.id() == plugin)
-                .map_or_else(|| plugin.clone(), |(manifest, _)| manifest.name().clone());
-            format!("From the {name} plugin")
-        }
-        ThemeSource::Folder(_) => "From the themes folder".to_string(),
-    };
-    let modes = match (
-        pack.has_mode(ThemeMode::Light),
-        pack.has_mode(ThemeMode::Dark),
-    ) {
-        (true, true) => "Light and dark",
-        (true, false) => "Light only",
-        _ => "Dark only",
-    };
-    let mut details = vec![modes.to_string(), source];
-    if let Some(author) = &manifest.author {
-        details.insert(0, format!("by {author}"));
-    }
-    if let Some(version) = &manifest.version {
-        details.push(format!("v{version}"));
-    }
-    let description = match &manifest.description {
-        Some(description) => format!("{description}\n{}", details.join(" · ")),
-        None => details.join(" · "),
-    };
-
-    let id = manifest.id.clone();
-    let preview = pack.clone();
-    SettingItem::new(
-        manifest.name.clone(),
-        SettingField::render(move |options, _, cx| {
-            let active = ThemeCatalog::global(cx)
-                .active_pack()
-                .is_some_and(|active| active.id() == &id);
-            let id = id.clone();
-            h_flex().gap_3().child(theme_swatches(&preview)).child(
-                Button::new(SharedString::from(format!("use-theme-{id}")))
-                    .with_size(options.size())
-                    .when(active, |button| {
-                        button.primary().label("Active").disabled(true)
-                    })
-                    .when(!active, |button| button.outline().label("Use"))
-                    .on_click(move |_, _, cx| {
-                        let id = id.to_string();
-                        ThemeCatalog::update_appearance(cx, |appearance| appearance.theme = id);
-                    }),
-            )
-        }),
-    )
-    .description(description)
-    .keywords(["theme"])
-}
-
-/// A small preview of a theme's background, sidebar and accent colors for
-/// each variant.
-fn theme_swatches(pack: &ThemePack) -> impl IntoElement {
-    let variants: Vec<(Hsla, Hsla, Hsla)> = [ThemeMode::Light, ThemeMode::Dark]
-        .into_iter()
-        .filter_map(|mode| pack.exact_variant(mode))
-        .map(|variant| {
-            let colors = &variant.config().colors;
-            let parse = |value: &Option<SharedString>, fallback: Hsla| {
-                value
-                    .as_ref()
-                    .and_then(|value| gpui_kit::component::try_parse_color(value).ok())
-                    .unwrap_or(fallback)
-            };
-            let (background, sidebar, accent) = if variant.mode().is_dark() {
-                (gpui_kit::black(), gpui_kit::black(), gpui_kit::white())
-            } else {
-                (gpui_kit::white(), gpui_kit::white(), gpui_kit::black())
-            };
-            (
-                parse(&colors.background, background),
-                parse(&colors.sidebar, sidebar),
-                parse(&colors.primary, accent),
-            )
-        })
-        .collect();
-    h_flex()
-        .gap_1()
-        .children(variants.into_iter().map(|(background, sidebar, accent)| {
-            h_flex()
-                .w_12()
-                .h_6()
-                .rounded_sm()
-                .overflow_hidden()
-                .border_1()
-                .border_color(gpui_kit::black().opacity(0.15))
-                .child(div().w_4().h_full().bg(sidebar))
-                .child(
-                    div()
-                        .flex_1()
-                        .h_full()
-                        .bg(background)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(div().size_2().rounded_full().bg(accent)),
-                )
-        }))
 }
 
 fn editor_page() -> SettingPage {

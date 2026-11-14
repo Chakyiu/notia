@@ -73,14 +73,13 @@ On Windows and Linux, Ctrl takes the place of `⌘`. Next and previous tab use C
 | Previous tab | `Ctrl+Shift+Tab` |
 | Edit, half edit, and preview | `⌘E` |
 | Search in all files | `⌘⇧F` |
-| Today's daily note | `⌘⇧T` |
 | Change theme | `⌘K` then `⌘T` |
 | Toggle the left sidebar | `⌘\` |
 | Toggle the right sidebar | `⌘⇧\` |
 | Settings | `⌘,` |
 | Quit | `⌘Q` |
 
-The command palette lists everything else, including inserting the current date or time and opening yesterday's or tomorrow's daily note.
+The command palette lists everything else, including inserting the current date or time.
 
 ## Plugins
 
@@ -95,35 +94,43 @@ Core plugins are Rust and ship with the app. Turn them off in **Settings → Plu
 | Backlinks | Notes that link here, and the links this note makes |
 | Tags | Every tag in the vault |
 | Word count | Words and characters in the status bar |
-| Daily notes | Today's note in the `Daily` folder, created when needed |
 | Date and time | Inserts the current date or time |
-| Theme gallery | Extra themes and the theme picker |
+| Theme gallery | Nord, Rosé Pine, Catppuccin, and Paper |
 
 Community plugins are JavaScript, installed like Obsidian's. Each one is a folder in `.notia/plugins`, or a link there to a folder elsewhere, with a `manifest.json` and a `main.js`. Notia lists a plugin from its manifest and loads the code only after you enable it. Turning it off unloads it. Saving its files reloads it, including through a link. The API is in `crates/notia-js/notia.d.ts`, and Notia copies that file to `.notia/plugins/notia.d.ts` for editor completions.
 
 ```js
-import { Plugin, Notice } from "notia";
+import { Plugin, Notice, ui } from "notia";
 
 export default class Hello extends Plugin {
-  onload() {
+  async onload() {
+    this.settings = { greeting: "Hello!", ...(await this.loadData()) };
     this.addCommand({
       id: "hello",
       name: "Say hello",
-      callback: () => new Notice("Hello!"),
+      callback: () => new Notice(this.settings.greeting),
+    });
+    this.addSettingTab({
+      render: () => [
+        ui.setting("Greeting", ui.textInput(this.settings.greeting, (greeting) => {
+          this.settings.greeting = greeting;
+          this.saveData(this.settings);
+        })),
+      ],
     });
   }
 }
 ```
 
-A plugin can add commands, ribbon buttons, status bar items, sidebar panels, and bars above the open note. It can read and write notes, and change the open note through an `Editor` like Obsidian's: `app.workspace.getActiveEditor()`, or the first argument of a command's `editorCallback`.
+A plugin can add commands, ribbon buttons, status bar items, sidebar panels, bars above the open note, and a page of options in Settings. It can read and write notes, and change the open note through an `Editor` like Obsidian's: `app.workspace.getActiveEditor()`, or the first argument of a command's `editorCallback`.
 
-A plugin is written only against this API, so it can live in a repository of its own. Link its folder into a vault and keep a copy of `notia.d.ts` beside its `main.js`:
+A plugin is written only against this API, so it can live in a repository of its own. Daily notes does: it opens a note for each day, creating it when needed, and **Open today's daily note** is `⌘⇧T`. Link its folder into a vault and keep a copy of `notia.d.ts` beside its `main.js`:
 
 ```
 ln -s ~/code/my-plugin ~/Notes/.notia/plugins/my-plugin
 ```
 
-Rust plugins implement the `Plugin` trait and register through a `PluginContext`. The core plugins in `crates/notia-plugins` are written only against that public API.
+Rust plugins implement the `Plugin` trait and register through a `PluginContext`. The core plugins in `crates/notia-plugins` are written only against that public API. A Rust plugin's settings page is a `SettingsTab`, and `Notia::save_plugin_data` keeps its values in `.notia/plugin-data`.
 
 ## Themes
 

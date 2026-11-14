@@ -1,9 +1,9 @@
 //! The plugin API of Notia.
 //!
 //! Everything a user sees beyond the bare window frame — the file explorer,
-//! search, outline, backlinks, the status bar counters, daily notes and every
-//! theme — is contributed by a plugin. A plugin implements [`Plugin`] and, when
-//! it is enabled, registers its contributions through a [`PluginContext`]:
+//! search, outline, backlinks, the status bar counters, and every theme — is
+//! contributed by a plugin. A plugin implements [`Plugin`] and, when it is
+//! enabled, registers its contributions through a [`PluginContext`]:
 //!
 //! ```ignore
 //! struct HelloPlugin;
@@ -42,6 +42,7 @@ pub mod editor;
 mod host;
 mod manifest;
 mod settings;
+pub mod settings_tab;
 mod vault;
 pub mod workspace;
 
@@ -57,6 +58,7 @@ pub use manifest::{PluginKind, PluginManifest};
 pub use notia_core as core;
 pub use notia_theme as theme;
 pub use settings::{AppSettings, EditorSettings, FileSettings, ViewMode};
+pub use settings_tab::{Setting, SettingControl, SettingValue, SettingsSection, SettingsTab};
 pub use vault::{VaultEvent, VaultModel};
 pub use workspace::{ActiveNote, OpenOptions, WorkspaceEvent, WorkspaceHandle, WorkspaceModel};
 
@@ -87,6 +89,30 @@ impl Notia {
     /// What the workspace shows, such as the active note.
     pub fn workspace(cx: &App) -> Entity<WorkspaceModel> {
         cx.global::<Self>().workspace.clone()
+    }
+
+    /// What a plugin saved with [`Notia::save_plugin_data`], or the default
+    /// when it saved nothing.
+    pub fn load_plugin_data<T: serde::de::DeserializeOwned + Default>(
+        plugin_id: &str,
+        cx: &App,
+    ) -> T {
+        read_json(&Self::plugin_data_path(plugin_id, cx))
+    }
+
+    /// Keeps a plugin's settings in the vault, in
+    /// `.notia/plugin-data/<plugin id>.json`.
+    pub fn save_plugin_data<T: serde::Serialize>(plugin_id: &str, data: &T, cx: &App) {
+        write_json(&Self::plugin_data_path(plugin_id, cx), data);
+    }
+
+    fn plugin_data_path(plugin_id: &str, cx: &App) -> std::path::PathBuf {
+        Self::vault(cx)
+            .read(cx)
+            .vault()
+            .config_dir()
+            .join("plugin-data")
+            .join(format!("{plugin_id}.json"))
     }
 }
 

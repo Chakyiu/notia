@@ -16,6 +16,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::{icon, runtime::JsRuntime};
 
@@ -40,14 +41,15 @@ impl Render for StatusText {
     }
 }
 
-/// An element of a panel, as made by the `ui` functions of the plugin API.
 fn wraps_by_default() -> bool {
     true
 }
 
-#[derive(Deserialize)]
+/// An element of a panel or settings tab, as made by the `ui` functions of
+/// the plugin API. Handlers are indices into the view's handlers.
+#[derive(Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum Node {
+pub(crate) enum Node {
     Column {
         #[serde(default)]
         children: Vec<Node>,
@@ -93,13 +95,58 @@ enum Node {
     Empty {
         text: String,
     },
+    /// A row of a settings tab, with one of the controls below.
+    Setting {
+        name: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        control: Option<Box<Node>>,
+    },
+    Toggle {
+        value: bool,
+        #[serde(default, rename = "onChange")]
+        on_change: Option<usize>,
+    },
+    TextInput {
+        #[serde(default)]
+        value: String,
+        #[serde(default, rename = "onChange")]
+        on_change: Option<usize>,
+    },
+    NumberInput {
+        #[serde(default)]
+        value: f64,
+        #[serde(default)]
+        min: Option<f64>,
+        #[serde(default)]
+        max: Option<f64>,
+        #[serde(default)]
+        step: Option<f64>,
+        #[serde(default, rename = "onChange")]
+        on_change: Option<usize>,
+    },
+    Dropdown {
+        #[serde(default)]
+        value: String,
+        #[serde(default)]
+        options: Vec<DropdownOption>,
+        #[serde(default, rename = "onChange")]
+        on_change: Option<usize>,
+    },
     #[serde(other)]
     Unknown,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
+pub(crate) struct DropdownOption {
+    pub(crate) value: String,
+    pub(crate) label: String,
+}
+
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ListItem {
+pub(crate) struct ListItem {
     title: String,
     #[serde(default)]
     subtitle: Option<String>,
@@ -138,7 +185,7 @@ impl Render for JsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.dirty.replace(false) {
             self.content = match self.js.upgrade() {
-                Some(js) => js.render_panel(&self.id, cx).and_then(|json| {
+                Some(js) => js.render_view(&self.id, cx).and_then(|json| {
                     serde_json::from_str(&json)
                         .map_err(|error| format!("The panel is invalid: {error}"))
                 }),
@@ -149,7 +196,8 @@ impl Render for JsPanel {
 
         let handlers = Handlers {
             js: self.js.clone(),
-            panel: self.id.clone(),
+            view: self.id.clone(),
+            after: None,
         };
         let mut ids = 0;
         let body = match &self.content {
@@ -181,25 +229,39 @@ impl Render for JsPanel {
     }
 }
 
-/// Runs the click handlers of a panel's elements.
+type AfterHandler = Rc<dyn Fn(&mut App)>;
+
+/// Runs the handlers of a view's elements.
 #[derive(Clone)]
-struct Handlers {
-    js: Weak<JsRuntime>,
-    panel: Rc<str>,
+pub(crate) struct Handlers {
+    pub(crate) js: Weak<JsRuntime>,
+    pub(crate) view: Rc<str>,
+    /// Runs after each handler.
+    pub(crate) after: Option<AfterHandler>,
 }
 
 impl Handlers {
+    pub(crate) fn call(&self, handler: usize, args: Vec<Value>, cx: &mut App) {
+        if let Some(js) = self.js.upgrade() {
+            js.call_handler(&self.view, handler, args, cx);
+        }
+        if let Some(after) = &self.after {
+            after(cx);
+        }
+    }
+
     fn on_click(&self, handler: usize) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
         let this = self.clone();
-        move |_, _, cx| {
-            if let Some(js) = this.js.upgrade() {
-                js.click(&this.panel, handler, cx);
-            }
-        }
+        move |_, _, cx| this.call(handler, Vec::new(), cx)
     }
 }
 
-fn render_node(node: &Node, handlers: &Handlers, ids: &mut usize, cx: &App) -> AnyElement {
+pub(crate) fn render_node(
+    node: &Node,
+    handlers: &Handlers,
+    ids: &mut usize,
+    cx: &App,
+) -> AnyElement {
     let theme = cx.theme();
     let muted = theme.muted_foreground;
     let mut next_id = || {
@@ -324,6 +386,15 @@ fn render_node(node: &Node, handlers: &Handlers, ids: &mut usize, cx: &App) -> A
             .text_sm()
             .text_color(muted)
             .child(text.clone())
+            .into_any_element(),
+        Node::Setting { .. }
+        | Node::Toggle { .. }
+        | Node::TextInput { .. }
+        | Node::NumberInput { .. }
+        | Node::Dropdown { .. } => div()
+            .text_xs()
+            .text_color(muted)
+            .child("Settings show only on a settings tab, at its top level.")
             .into_any_element(),
         Node::Unknown => div()
             .text_xs()

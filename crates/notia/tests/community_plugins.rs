@@ -12,7 +12,8 @@ use gpui_kit::{
     AnyWindowHandle, Bounds, HeadlessAppContext, WindowBounds, WindowOptions, px, size,
 };
 use notia_plugin::{
-    EditorSelection, EditorSnapshot, Notia, OpenOptions, PluginHost,
+    EditorSelection, EditorSnapshot, Notia, OpenOptions, PluginHost, Setting, SettingControl,
+    SettingsSection, SettingsTab,
     core::{Vault, VaultPath},
     workspace,
 };
@@ -60,6 +61,51 @@ module.exports = class extends Plugin {
     this.addCommand({ id: "first", name: "First", callback: () => this.app.vault.create("CommonJS", "first") });
   }
 };
+"#;
+
+/// A settings tab with each kind of control, saving every change.
+const OPTIONS: &str = r#"
+import { Plugin, ui } from "notia";
+
+export default class Options extends Plugin {
+  async onload() {
+    this.settings = Object.assign(
+      { status: true, label: "Hello", size: 3, style: "wiki" },
+      await this.loadData(),
+    );
+    this.tab = this.addSettingTab({
+      icon: "settings",
+      render: () => [
+        ui.text("Options for the test."),
+        ui.heading("Bar"),
+        ui.setting("Show status", ui.toggle(this.settings.status, (status) => this.save({ status })), {
+          description: "In the status bar.",
+        }),
+        ui.setting("Label", ui.textInput(this.settings.label, (label) => this.save({ label }))),
+        ui.setting("Size", ui.numberInput(this.settings.size, (size) => this.save({ size }), { min: 1, max: 9 })),
+        ui.heading("Links"),
+        ui.setting(
+          "Style",
+          ui.dropdown(this.settings.style, [["wiki", "Wikilinks"], ["md", "Markdown"]], (style) => this.save({ style })),
+        ),
+        ui.setting("Reset", ui.button("Reset", () => this.save({ size: 3 }))),
+      ],
+    });
+    this.addCommand({
+      id: "grow",
+      name: "Grow",
+      callback: () => {
+        this.settings.size += 1;
+        this.tab.refresh();
+      },
+    });
+  }
+
+  save(change) {
+    Object.assign(this.settings, change);
+    this.saveData(this.settings);
+  }
+}
 "#;
 
 /// Edits the open note through the `Editor` API and records what it read.
@@ -178,6 +224,7 @@ fn main() {
     );
     write_plugin(&plugins, "commonjs", &[("main.js", COMMONJS)]);
     write_plugin(&plugins, "editing", &[("main.js", EDITING)]);
+    write_plugin(&plugins, "options", &[("main.js", OPTIONS)]);
     write_plugin(
         &plugins,
         "broken",
@@ -204,7 +251,7 @@ fn main() {
     .unwrap();
     fs::write(
         root.join(".notia/plugins.json"),
-        r#"{ "probe": true, "commonjs": true, "editing": true, "broken": true, "slow": true }"#,
+        r#"{ "probe": true, "commonjs": true, "editing": true, "options": true, "broken": true, "slow": true }"#,
     )
     .unwrap();
 
@@ -403,6 +450,82 @@ export default class extends Plugin {{
         );
     }
 
+    // A community plugin's settings tab is drawn from its `render`, and
+    // changing a setting runs the plugin's `onChange`.
+    let tab = app.settings_tab("options");
+    assert_eq!(tab.id().as_ref(), "options:settings-1");
+    assert!(tab.title().is_none(), "the page is named after the plugin");
+    let sections = app.sections(&tab);
+    let titles: Vec<_> = sections
+        .iter()
+        .map(|section| section.title().cloned())
+        .collect();
+    assert_eq!(titles, [None, Some("Bar".into()), Some("Links".into())]);
+    assert_eq!(
+        find(&sections, "Show status")
+            .description()
+            .map(AsRef::as_ref),
+        Some("In the status bar.")
+    );
+    app.cx.update(|cx| {
+        let SettingControl::Toggle(status) = find(&sections, "Show status").control().clone()
+        else {
+            panic!("Show status is a toggle")
+        };
+        let SettingControl::Text(label) = find(&sections, "Label").control().clone() else {
+            panic!("Label is a text field")
+        };
+        let SettingControl::Number {
+            value: size, range, ..
+        } = find(&sections, "Size").control().clone()
+        else {
+            panic!("Size is a number")
+        };
+        let SettingControl::Choice {
+            value: style,
+            options,
+        } = find(&sections, "Style").control().clone()
+        else {
+            panic!("Style is a choice")
+        };
+        assert_eq!(range, 1.0..=9.0);
+        assert_eq!(options[1], ("md".into(), "Markdown".into()));
+        assert!(status.get(cx));
+        assert_eq!(label.get(cx).as_ref(), "Hello");
+        assert_eq!(size.get(cx), 3.0);
+        assert_eq!(style.get(cx).as_ref(), "wiki");
+        status.set(false, cx);
+        label.set("Hi".into(), cx);
+        size.set(5.0, cx);
+        style.set("md".into(), cx);
+    });
+    let saved: serde_json::Value =
+        serde_json::from_str(&read(&plugins, "options/data.json")).unwrap();
+    assert_eq!(
+        saved,
+        serde_json::json!({ "status": false, "label": "Hi", "size": 5, "style": "md" })
+    );
+    // The next draw renders the tab again with the new values.
+    let size = |app: &mut App| {
+        let sections = app.sections(&tab);
+        app.cx.update(|cx| match find(&sections, "Size").control() {
+            SettingControl::Number { value, .. } => value.get(cx),
+            _ => panic!("Size is a number"),
+        })
+    };
+    assert_eq!(size(&mut app), 5.0);
+    // `refresh` shows a change made elsewhere at once.
+    app.run_command("options:grow");
+    assert_eq!(size(&mut app), 6.0);
+    app.update(|cx| PluginHost::set_enabled("options", false, cx));
+    app.read(|host| {
+        assert!(
+            host.settings_tabs()
+                .iter()
+                .all(|(manifest, _)| manifest.id() != "options")
+        )
+    });
+
     // Turning off the loader removes every community plugin.
     app.update(|cx| PluginHost::set_enabled("community-plugins", false, cx));
     app.read(|host| {
@@ -428,6 +551,14 @@ fn write_plugin(plugins: &Path, id: &str, files: &[(&str, &str)]) {
 
 fn read(dir: &Path, name: &str) -> String {
     fs::read_to_string(dir.join(name)).unwrap_or_else(|error| panic!("read {name}: {error}"))
+}
+
+fn find<'a>(sections: &'a [SettingsSection], name: &str) -> &'a Setting {
+    sections
+        .iter()
+        .flat_map(SettingsSection::items)
+        .find(|setting| setting.name().as_ref() == name)
+        .unwrap_or_else(|| panic!("no setting {name}"))
 }
 
 struct App {
@@ -515,6 +646,22 @@ impl App {
             })
             .expect("open a note");
         self.settle();
+    }
+
+    /// The settings tab of the enabled plugin with this id.
+    fn settings_tab(&mut self, plugin: &str) -> SettingsTab {
+        self.read(|host| {
+            host.settings_tabs()
+                .into_iter()
+                .find(|(manifest, _)| manifest.id() == plugin)
+                .map(|(_, tab)| tab)
+        })
+        .unwrap_or_else(|| panic!("{plugin} has no settings tab"))
+    }
+
+    /// What the settings dialog would show for `tab` now.
+    fn sections(&mut self, tab: &SettingsTab) -> Vec<SettingsSection> {
+        self.cx.update(|cx| tab.build(cx))
     }
 
     /// The active note's editor.

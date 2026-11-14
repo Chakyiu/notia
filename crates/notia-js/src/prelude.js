@@ -109,10 +109,41 @@
     list: (items = []) => ({ type: "list", items }),
     separator: () => ({ type: "separator" }),
     empty: (text) => ({ type: "empty", text: String(text) }),
+    // Settings tabs: a named row with one of the controls below.
+    setting: (name, control, options = {}) => ({ ...options, type: "setting", name: String(name), control }),
+    toggle: (value, onChange) => ({
+      type: "toggle",
+      value: Boolean(value),
+      onChange: expectFunction(onChange, "a toggle's onChange"),
+    }),
+    textInput: (value, onChange) => ({
+      type: "text_input",
+      value: String(value ?? ""),
+      onChange: expectFunction(onChange, "a text input's onChange"),
+    }),
+    numberInput: (value, onChange, options = {}) => ({
+      ...options,
+      type: "number_input",
+      value: Number(value) || 0,
+      onChange: expectFunction(onChange, "a number input's onChange"),
+    }),
+    dropdown: (value, options, onChange) => ({
+      type: "dropdown",
+      value: String(value ?? ""),
+      options: [...(options ?? [])].map((option) => {
+        const [choice, label] = Array.isArray(option)
+          ? option
+          : option !== null && typeof option === "object"
+            ? [option.value, option.label]
+            : [option];
+        return { value: String(choice), label: String(label ?? choice) };
+      }),
+      onChange: expectFunction(onChange, "a dropdown's onChange"),
+    }),
   });
 
-  // Turns what a panel's render function returned into JSON. Functions
-  // become numbers that index the panel's handlers.
+  // Turns what a view's render function returned into JSON. Functions
+  // become numbers that index the view's handlers.
   const serialize = (tree, handlers) => {
     const element = (value) =>
       value !== null && typeof value === "object" ? value : ui.text(String(value));
@@ -128,11 +159,14 @@
         return value.filter(present).map(key === "children" ? element : (item) =>
           item !== null && typeof item === "object" ? item : { title: String(item) });
       }
+      if (key === "control" && present(value)) return element(value);
       return value;
     });
   };
 
-  const panels = new Map();
+  // Panels and settings tabs, by id. Settings tabs are `settings:<n>`,
+  // which no panel id can be.
+  const views = new Map();
 
   // Counts calls from Notia. An editor reads its note again in each call,
   // since the user may have typed in between.
@@ -358,6 +392,7 @@
   });
 
   let ribbonIcons = 0;
+  let settingTabs = 0;
 
   class Plugin {
     constructor(app, manifest) {
@@ -413,11 +448,19 @@
       id = String(id ?? "");
       expectFunction(render, "a panel's render");
       call("addPanel", { id, title: String(title ?? id), icon, side });
-      panels.set(id, { render, handlers: [] });
+      views.set(id, { render, handlers: [] });
       return Object.freeze({
         refresh: () => call("refreshPanel", id),
         show: () => call("showPanel", id),
       });
+    }
+
+    addSettingTab({ title = null, icon = null, render } = {}) {
+      expectFunction(render, "a settings tab's render");
+      const id = `settings:${++settingTabs}`;
+      call("addSettingTab", { id, title: title === null ? null : String(title), icon });
+      views.set(id, { render, handlers: [] });
+      return Object.freeze({ refresh: () => call("refreshSettings", id) });
     }
 
     registerEvent(ref) {
@@ -501,16 +544,17 @@
         return undefined;
       }
       case "render": {
-        const panel = panels.get(target);
-        if (!panel) throw new Error(`there is no panel "${target}"`);
+        const view = views.get(target);
+        if (!view) throw new Error(`there is no view "${target}"`);
         const handlers = [];
-        const json = serialize(panel.render(), handlers);
-        panel.handlers = handlers;
+        const json = serialize(view.render(), handlers);
+        view.handlers = handlers;
         return json;
       }
       case "ui": {
-        const handler = panels.get(target)?.handlers[Number(payload)];
-        if (handler) settle(handler());
+        const [index, ...args] = JSON.parse(payload);
+        const handler = views.get(target)?.handlers[Number(index)];
+        if (handler) settle(handler(...args));
         return undefined;
       }
       case "unload": {

@@ -4154,7 +4154,7 @@ dependencies = [
 
 [[package]]
 name = "notia"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -4172,7 +4172,7 @@ dependencies = [
 
 [[package]]
 name = "notia-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "tempfile",
@@ -4180,7 +4180,7 @@ dependencies = [
 
 [[package]]
 name = "notia-js"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "gpui-kit",
@@ -4195,7 +4195,7 @@ dependencies = [
 
 [[package]]
 name = "notia-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "gpui-kit",
@@ -4210,18 +4210,19 @@ dependencies = [
 
 [[package]]
 name = "notia-plugins"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "gpui-kit",
  "log",
  "notia-plugin",
+ "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "notia-theme"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "gpui-kit",
@@ -4234,7 +4235,7 @@ dependencies = [
 
 [[package]]
 name = "notia-workspace"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "gpui-kit",

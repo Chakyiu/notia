@@ -29,6 +29,7 @@ mod manifest;
 mod offsets;
 mod runtime;
 mod scope;
+mod settings;
 mod view;
 
 use gpui_kit::{App, AssetSource as _, assets::IconName as Lucide, component::Icon};

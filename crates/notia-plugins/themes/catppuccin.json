@@ -114,6 +114,7 @@
         "secondary.background": "#313244",
         "secondary.foreground": "#cdd6f4",
         "secondary.hover.background": "#45475a",
+        "secondary.active.background": "#585b70",
         "link": "#89b4fa",
         "list.hover.background": "#2a2b3c",
         "list.active.background": "#cba6f726",

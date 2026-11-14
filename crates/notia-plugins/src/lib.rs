@@ -4,7 +4,6 @@
 extern crate gpui_kit as gpui;
 
 mod backlinks;
-mod daily_notes;
 mod date_time;
 mod file_explorer;
 mod file_icons;
@@ -22,7 +21,6 @@ use notia_plugin::{
 };
 
 pub use backlinks::BacklinksPlugin;
-pub use daily_notes::DailyNotesPlugin;
 pub use date_time::DateTimePlugin;
 pub use file_explorer::FileExplorerPlugin;
 pub use file_icons::FileIconsPlugin;
@@ -55,7 +53,6 @@ pub fn register(cx: &mut App) {
     PluginHost::register(BacklinksPlugin, cx);
     PluginHost::register(TagsPlugin, cx);
     PluginHost::register(WordCountPlugin, cx);
-    PluginHost::register(DailyNotesPlugin, cx);
     PluginHost::register(DateTimePlugin, cx);
     PluginHost::register(ThemeGalleryPlugin, cx);
 }

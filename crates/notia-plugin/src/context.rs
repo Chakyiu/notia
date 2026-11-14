@@ -1,7 +1,7 @@
 use gpui_kit::{App, SharedString, Subscription, Task};
 use notia_theme::{ThemePack, ThemeSource};
 
-use crate::{Command, NavigationIcon, Panel, RibbonItem, StatusItem};
+use crate::{Command, NavigationIcon, Panel, RibbonItem, SettingsTab, StatusItem};
 
 pub(crate) type DeactivateHook = Box<dyn FnOnce(&mut App)>;
 
@@ -15,6 +15,7 @@ pub struct PluginContext {
     pub(crate) panels: Vec<Panel>,
     pub(crate) status_items: Vec<StatusItem>,
     pub(crate) navigation_icons: Vec<NavigationIcon>,
+    pub(crate) settings_tabs: Vec<SettingsTab>,
     pub(crate) themes: Vec<ThemePack>,
     pub(crate) subscriptions: Vec<Subscription>,
     pub(crate) tasks: Vec<Task<()>>,
@@ -30,6 +31,7 @@ impl PluginContext {
             panels: Vec::new(),
             status_items: Vec::new(),
             navigation_icons: Vec::new(),
+            settings_tabs: Vec::new(),
             themes: Vec::new(),
             subscriptions: Vec::new(),
             tasks: Vec::new(),
@@ -61,6 +63,11 @@ impl PluginContext {
     /// lowest order to highest; the first icon is drawn.
     pub fn add_navigation_icon(&mut self, icon: NavigationIcon) {
         self.navigation_icons.push(icon.qualified(&self.plugin_id));
+    }
+
+    /// Adds a page of the plugin's options to the settings dialog.
+    pub fn add_settings_tab(&mut self, tab: SettingsTab) {
+        self.settings_tabs.push(tab.qualified(&self.plugin_id));
     }
 
     /// Contributes a theme plugin. It appears in the appearance settings

@@ -73,6 +73,8 @@ enum Node {
         icon: Option<String>,
         #[serde(default)]
         variant: Option<String>,
+        #[serde(default)]
+        tooltip: Option<String>,
         #[serde(default, rename = "onClick")]
         on_click: Option<usize>,
     },
@@ -106,15 +108,18 @@ pub(crate) struct JsPanel {
     js: Weak<JsRuntime>,
     id: Rc<str>,
     dirty: Rc<Cell<bool>>,
+    /// A short bar above the note, instead of a sidebar that fills its column.
+    bar: bool,
     content: Result<Node, SharedString>,
 }
 
 impl JsPanel {
-    pub(crate) fn new(js: Weak<JsRuntime>, id: String, dirty: Rc<Cell<bool>>) -> Self {
+    pub(crate) fn new(js: Weak<JsRuntime>, id: String, dirty: Rc<Cell<bool>>, bar: bool) -> Self {
         Self {
             js,
             id: id.into(),
             dirty,
+            bar,
             content: Ok(Node::Column {
                 children: Vec::new(),
             }),
@@ -148,11 +153,18 @@ impl Render for JsPanel {
                 .child(error.clone())
                 .into_any_element(),
         };
-        v_flex()
+        let panel = v_flex()
             .id(SharedString::from(format!("js-panel-{}", self.id)))
-            .size_full()
-            .child(v_flex().p_3().gap_2().child(body))
-            .overflow_y_scrollbar()
+            .w_full();
+        if self.bar {
+            panel.flex_none().px_2().py_1().child(body).into_any_element()
+        } else {
+            panel
+                .size_full()
+                .overflow_y_scrollbar()
+                .child(v_flex().p_3().gap_2().child(body))
+                .into_any_element()
+        }
     }
 }
 
@@ -232,15 +244,17 @@ fn render_node(node: &Node, handlers: &Handlers, ids: &mut usize, cx: &App) -> A
             label,
             icon: icon_name,
             variant,
+            tooltip,
             on_click,
         } => Button::new(next_id())
-            .label(label.clone())
             .small()
             .map(|button| match variant.as_deref() {
                 Some("primary") => button.primary(),
                 Some("ghost") => button.ghost(),
                 _ => button.outline(),
             })
+            .when(!label.is_empty(), |button| button.label(label.clone()))
+            .when_some(tooltip.clone(), |button, tip| button.tooltip(tip))
             .when_some(icon_name.as_deref(), |button, name| {
                 button.icon(icon(Some(name)))
             })

@@ -92,6 +92,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job only downloads artifacts, so gh cannot discover the repo from git.
+          GH_REPO: ${{ github.repository }}
         run: |
           shopt -s nullglob
           files=(release/*)

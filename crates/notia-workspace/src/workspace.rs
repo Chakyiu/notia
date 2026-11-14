@@ -289,6 +289,7 @@ impl Workspace {
         match placement {
             PanelPlacement::Left => &self.left,
             PanelPlacement::Right => &self.right,
+            PanelPlacement::Editor => panic!("an editor toolbar is not a sidebar"),
         }
     }
 
@@ -296,6 +297,7 @@ impl Workspace {
         match placement {
             PanelPlacement::Left => &mut self.left,
             PanelPlacement::Right => &mut self.right,
+            PanelPlacement::Editor => panic!("an editor toolbar is not a sidebar"),
         }
     }
 
@@ -575,10 +577,15 @@ impl Workspace {
     }
 
     pub(crate) fn show_panel(&mut self, id: &str, cx: &mut Context<Self>) {
-        if let Some(panel) = self.panels.iter().find(|panel| panel.id().as_ref() == id) {
-            let (placement, id) = (panel.placement(), panel.id().clone());
-            self.select_panel(placement, id, cx);
+        let Some(panel) = self.panels.iter().find(|panel| panel.id().as_ref() == id) else {
+            return;
+        };
+        // Editor toolbars are already above the note.
+        if panel.placement() == PanelPlacement::Editor {
+            return;
         }
+        let (placement, id) = (panel.placement(), panel.id().clone());
+        self.select_panel(placement, id, cx);
     }
 
     fn publish_active_note(&mut self, cx: &mut Context<Self>) {
@@ -746,6 +753,7 @@ impl Workspace {
                 },
                 "Toggle right sidebar",
             ),
+            PanelPlacement::Editor => panic!("an editor toolbar is not a sidebar"),
         };
         Button::new(id)
             .icon(icon)
@@ -924,6 +932,7 @@ impl Workspace {
         let edge = match placement {
             PanelPlacement::Left => HandleEdge::Trailing,
             PanelPlacement::Right => HandleEdge::Leading,
+            PanelPlacement::Editor => panic!("an editor toolbar is not a sidebar"),
         };
 
         div()
@@ -938,6 +947,7 @@ impl Workspace {
             .map(|this| match placement {
                 PanelPlacement::Left => this.border_r_1(),
                 PanelPlacement::Right => this.border_l_1(),
+                PanelPlacement::Editor => this,
             })
             .on_drag_move(
                 cx.listener(move |this, event: &DragMoveEvent<SidebarResize>, _, cx| {
@@ -948,6 +958,7 @@ impl Workspace {
                     let width = match placement {
                         PanelPlacement::Left => x - event.bounds.left(),
                         PanelPlacement::Right => event.bounds.right() - x,
+                        PanelPlacement::Editor => return,
                     };
                     this.sidebar_mut(placement).width = clamp_width(width);
                     this.schedule_layout_save(cx);
@@ -1049,18 +1060,33 @@ impl Render for Workspace {
             theme.foreground,
             theme.font_family.clone(),
         );
-        let status_bar_bg = theme.sidebar;
+        let (status_bar_bg, border) = (theme.sidebar, theme.border);
 
-        let main =
-            div()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .bg(background)
-                .child(match self.active_editor() {
-                    Some(editor) => editor.clone().into_any_element(),
-                    None => self.render_empty_state(window, cx).into_any_element(),
-                });
+        let editor_bars: Vec<_> = self
+            .panels
+            .iter()
+            .filter(|panel| panel.placement() == PanelPlacement::Editor)
+            .filter_map(|panel| self.panel_views.get(panel.id()).map(|(_, view)| view.clone()))
+            .collect();
+        let note = match self.active_editor() {
+            Some(editor) => editor.clone().into_any_element(),
+            None => self.render_empty_state(window, cx).into_any_element(),
+        };
+        let main = v_flex()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .bg(background)
+            .children(editor_bars.into_iter().map(|view| {
+                div()
+                    .w_full()
+                    .flex_none()
+                    .border_b_1()
+                    .border_color(border)
+                    .child(view)
+            }))
+            .child(div().flex_1().min_h_0().w_full().child(note));
 
         v_flex()
             .id("workspace")

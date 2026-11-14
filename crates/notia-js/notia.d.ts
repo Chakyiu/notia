@@ -97,8 +97,11 @@ declare module "notia" {
     title: string;
     /** A Lucide icon name, shown in the sidebar header. */
     icon?: string;
-    /** Defaults to `"right"`. */
-    side?: "left" | "right";
+    /**
+     * Defaults to `"right"`. `"editor"` draws the panel as a bar above the
+     * open note instead of docking it in a sidebar.
+     */
+    side?: "left" | "right" | "editor";
     /**
      * Returns what the panel shows. Notia calls it when the panel is first
      * shown, and again after `refresh()`.
@@ -124,7 +127,12 @@ declare module "notia" {
     button(
       label: string,
       onClick: () => unknown,
-      options?: { icon?: string; variant?: "outline" | "primary" | "ghost" },
+      options?: {
+        icon?: string;
+        variant?: "outline" | "primary" | "ghost";
+        /** Shown on hover. An empty label with an icon is an icon button. */
+        tooltip?: string;
+      },
     ): Element;
     list(items: (ListItem | string)[]): Element;
     separator(): Element;

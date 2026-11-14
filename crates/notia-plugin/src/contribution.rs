@@ -164,12 +164,14 @@ impl RibbonItem {
     }
 }
 
-/// Which sidebar a panel lives in.
+/// Where a panel is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelPlacement {
     Left,
     Right,
+    /// A bar above the open note, rather than a sidebar.
+    Editor,
 }
 
 /// A view docked in a sidebar, selected by its icon in the sidebar header.

@@ -209,7 +209,10 @@ impl JsRuntime {
             return Err(format!("there already is a panel “{}”", spec.id));
         }
         let dirty = Rc::new(Cell::new(true));
-        let view = cx.new(|_| JsPanel::new(Rc::downgrade(self), spec.id.clone(), dirty.clone()));
+        let bar = spec.side == "editor";
+        let view = cx.new(|_| {
+            JsPanel::new(Rc::downgrade(self), spec.id.clone(), dirty.clone(), bar)
+        });
         self.state.borrow_mut().panels.insert(
             spec.id.clone(),
             PanelSlot {
@@ -219,6 +222,7 @@ impl JsRuntime {
         );
         let placement = match spec.side.as_str() {
             "left" => PanelPlacement::Left,
+            "editor" => PanelPlacement::Editor,
             _ => PanelPlacement::Right,
         };
         let panel = Panel::new(

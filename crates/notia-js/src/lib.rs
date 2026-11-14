@@ -1,9 +1,9 @@
 //! Community plugins: JavaScript plugins installed in a vault, like
 //! Obsidian's.
 //!
-//! A community plugin is a folder in `<vault>/.notia/plugins` holding a
-//! `manifest.json` and an entry module, `main.js` unless the manifest's
-//! `main` names another:
+//! A community plugin is a folder in `<vault>/.notia/plugins`, or a link
+//! there to a folder elsewhere, holding a `manifest.json` and an entry
+//! module, `main.js` unless the manifest's `main` names another:
 //!
 //! ```js
 //! import { Plugin, Notice } from "notia";
@@ -26,6 +26,7 @@
 mod host;
 mod loader;
 mod manifest;
+mod offsets;
 mod runtime;
 mod scope;
 mod view;

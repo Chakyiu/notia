@@ -10,7 +10,9 @@ use std::{
 
 use gpui_kit::{App, AppContext as _, Entity, component::notification::Notification};
 use notia_plugin::{
-    Command, Notia, OpenOptions, Panel, PanelPlacement, RibbonItem, StatusItem, VaultModel,
+    Command, EditorChange, EditorCommand, EditorId, EditorSelection, EditorSnapshot,
+    EditorTransaction, Notia, OpenOptions, Panel, PanelPlacement, RibbonItem, StatusItem,
+    VaultModel, ViewMode,
     core::{Vault, VaultPath},
     workspace,
 };
@@ -18,8 +20,8 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 use crate::{
-    icon,
-    runtime::{Contribution, JsRuntime, PanelSlot, active_note_json, notify, with_window_later},
+    icon, offsets,
+    runtime::{Contribution, JsRuntime, PanelSlot, notify, with_window_later},
     view::{JsPanel, StatusText},
 };
 
@@ -67,6 +69,30 @@ struct PanelSpec {
 struct OpenSpec {
     line: Option<f64>,
     new_tab: bool,
+}
+
+/// An edit from the prelude's `Editor`, with offsets in UTF-16 code units.
+/// The changes refer to the text before the edit, and the selection to the
+/// text after it.
+#[derive(Deserialize)]
+struct EditSpec {
+    #[serde(default)]
+    changes: Vec<ChangeSpec>,
+    #[serde(default)]
+    selection: Option<SelectionSpec>,
+}
+
+#[derive(Deserialize)]
+struct ChangeSpec {
+    from: f64,
+    to: f64,
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct SelectionSpec {
+    anchor: f64,
+    head: f64,
 }
 
 impl JsRuntime {
@@ -150,6 +176,7 @@ impl JsRuntime {
             }
             _ if method.starts_with("vault.") => vault_call(method, &args, cx),
             _ if method.starts_with("workspace.") => self.workspace_call(method, &args, cx),
+            _ if method.starts_with("editor.") => editor_call(method, &args, cx),
             _ if method.starts_with("metadata.") => metadata_call(method, &args, cx),
             _ => Err(format!("Notia has no function “{method}”")),
         }
@@ -289,9 +316,7 @@ impl JsRuntime {
 
     fn workspace_call(&self, method: &str, args: &Args, cx: &mut App) -> Result<Value, String> {
         match method {
-            "workspace.activeNote" => Ok(active_note_json(
-                Notia::workspace(cx).read(cx).active_note(),
-            )),
+            "workspace.activeNote" => Ok(note_json(workspace::active_editor(cx).as_ref())),
             "workspace.openNote" => {
                 let path = note_path(&args.get::<String>(0)?)?;
                 let spec = args.get::<Option<OpenSpec>>(1)?.unwrap_or_default();
@@ -324,38 +349,6 @@ impl JsRuntime {
                 with_window_later(cx, move |window, cx| {
                     workspace::new_note(folder, window, cx)
                 });
-                Ok(Value::Null)
-            }
-            "workspace.insertText" => {
-                let text: String = args.get(0)?;
-                with_window_later(cx, move |window, cx| {
-                    workspace::insert_text(&text, window, cx)
-                });
-                Ok(Value::Null)
-            }
-            "workspace.selection" => {
-                let selection = workspace::selection(cx);
-                Ok(json!({
-                    "text": selection.text,
-                    "before": selection.before,
-                    "after": selection.after,
-                }))
-            }
-            "workspace.replaceSelection" => {
-                let text: String = args.get(0)?;
-                let expand_before = args.get::<Option<f64>>(1)?.unwrap_or(0.).max(0.) as usize;
-                let expand_after = args.get::<Option<f64>>(2)?.unwrap_or(0.).max(0.) as usize;
-                with_window_later(cx, move |window, cx| {
-                    workspace::replace_selection(&text, expand_before, expand_after, window, cx)
-                });
-                Ok(Value::Null)
-            }
-            "workspace.undo" => {
-                with_window_later(cx, |window, cx| workspace::undo(window, cx));
-                Ok(Value::Null)
-            }
-            "workspace.redo" => {
-                with_window_later(cx, |window, cx| workspace::redo(window, cx));
                 Ok(Value::Null)
             }
             "workspace.revealLine" => {
@@ -460,6 +453,105 @@ fn vault_call(method: &str, args: &Args, cx: &mut App) -> Result<Value, String> 
         }
         _ => Err(format!("Notia has no function “{method}”")),
     }
+}
+
+/// The calls behind the prelude's `Editor`. Offsets are in UTF-16 code
+/// units, like JavaScript string indices.
+fn editor_call(method: &str, args: &Args, cx: &mut App) -> Result<Value, String> {
+    match method {
+        "editor.get" => {
+            let editor = match args.get::<Option<f64>>(0)? {
+                Some(id) => workspace::editor(editor_id(id), cx),
+                None => workspace::active_editor(cx),
+            };
+            Ok(editor.as_ref().map_or(Value::Null, editor_json))
+        }
+        "editor.edit" => {
+            let id = editor_id(args.get(0)?);
+            let editor = workspace::editor(id, cx).ok_or("the note is no longer open")?;
+            let transaction = transaction(&editor, args.get(1)?)?;
+            workspace::edit(id, transaction, cx).map_err(|error| format!("{error:#}"))?;
+            Ok(Value::Null)
+        }
+        "editor.exec" => {
+            let id = editor_id(args.get(0)?);
+            let command = match args.get::<String>(1)?.as_str() {
+                "undo" => EditorCommand::Undo,
+                "redo" => EditorCommand::Redo,
+                "focus" => EditorCommand::Focus,
+                other => return Err(format!("editors have no command “{other}”")),
+            };
+            workspace::run_editor_command(id, command, cx);
+            Ok(Value::Null)
+        }
+        _ => Err(format!("Notia has no function “{method}”")),
+    }
+}
+
+fn editor_id(id: f64) -> EditorId {
+    EditorId::new(id.max(0.) as u64)
+}
+
+/// An open note's editor as the prelude reads it.
+fn editor_json(editor: &EditorSnapshot) -> Value {
+    let text = editor.text.as_ref();
+    json!({
+        "id": editor.id.as_u64(),
+        "path": editor.path.as_str(),
+        "text": text,
+        "anchor": offsets::to_utf16(text, editor.selection.anchor),
+        "head": offsets::to_utf16(text, editor.selection.head),
+    })
+}
+
+/// The edit `spec` describes, in bytes of the editor's text.
+fn transaction(editor: &EditorSnapshot, spec: EditSpec) -> Result<EditorTransaction, String> {
+    let text = editor.text.as_ref();
+    let byte = |text: &str, units: f64| offsets::from_utf16(text, units.max(0.) as usize);
+    let changes = spec
+        .changes
+        .into_iter()
+        .map(|change| {
+            let (from, to) = (byte(text, change.from), byte(text, change.to));
+            EditorChange {
+                range: from.min(to)..from.max(to),
+                text: change.text,
+            }
+        })
+        .collect();
+    let mut transaction = EditorTransaction {
+        changes,
+        selection: None,
+    };
+    if let Some(selection) = spec.selection {
+        let (after, _) = transaction
+            .apply(text, editor.selection)
+            .map_err(|error| format!("{error:#}"))?;
+        transaction.selection = Some(EditorSelection::new(
+            byte(&after, selection.anchor),
+            byte(&after, selection.head),
+        ));
+    }
+    Ok(transaction)
+}
+
+/// The note in an editor, as `getActiveNote` and workspace events give it.
+pub(crate) fn note_json(editor: Option<&EditorSnapshot>) -> Value {
+    editor.map_or(Value::Null, |editor| {
+        let text = editor.text.as_ref();
+        let before_cursor = text.get(..editor.selection.head).unwrap_or(text);
+        json!({
+            "path": editor.path.as_str(),
+            "name": editor.path.file_stem(),
+            "text": text,
+            "line": before_cursor.matches('\n').count(),
+            "mode": match editor.mode {
+                ViewMode::Editing => "editing",
+                ViewMode::Half => "half",
+                ViewMode::Reading => "preview",
+            },
+        })
+    })
 }
 
 fn metadata_call(method: &str, args: &Args, cx: &mut App) -> Result<Value, String> {

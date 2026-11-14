@@ -17,7 +17,8 @@ use std::rc::Rc;
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 use notia_plugin::{
-    Notia, OpenOptions, PanelPlacement, PluginHost, ViewMode,
+    EditorCommand, EditorId, EditorSnapshot, EditorTransaction, Notia, OpenOptions, PanelPlacement,
+    PluginHost, ViewMode,
     actions::*,
     core::VaultPath,
     workspace::{WorkspaceHandle, set_handle},
@@ -206,40 +207,32 @@ impl WorkspaceHandle for Handle {
         });
     }
 
-    fn insert_text(&self, text: &str, _: &mut Window, cx: &mut App) {
-        let text = text.to_string();
-        with_workspace(cx, move |this, window, cx| {
-            this.insert_text(&text, window, cx)
-        });
+    fn editor(&self, id: Option<EditorId>, cx: &App) -> Option<EditorSnapshot> {
+        let workspace = cx.try_global::<WorkspaceSlot>()?.workspace.upgrade()?;
+        let editor = workspace.read(cx).editor(id, cx)?;
+        Some(editor.read(cx).snapshot(cx))
     }
 
-    fn selection(&self, cx: &App) -> notia_plugin::workspace::SelectionText {
-        cx.try_global::<WorkspaceSlot>()
-            .and_then(|slot| slot.workspace.upgrade())
-            .map(|workspace| workspace.read(cx).selection(cx))
-            .unwrap_or_default()
-    }
-
-    fn replace_selection(
+    fn edit(
         &self,
-        text: &str,
-        expand_before: usize,
-        expand_after: usize,
-        _: &mut Window,
+        id: EditorId,
+        transaction: EditorTransaction,
         cx: &mut App,
-    ) {
-        let text = text.to_string();
+    ) -> anyhow::Result<()> {
+        let editor = cx
+            .try_global::<WorkspaceSlot>()
+            .and_then(|slot| slot.workspace.upgrade())
+            .and_then(|workspace| workspace.read(cx).editor(Some(id), cx).cloned())
+            .ok_or_else(|| anyhow::anyhow!("the note is not open"))?;
+        editor.update(cx, |editor, cx| editor.queue_edit(transaction, cx))?;
+        with_workspace(cx, |this, window, cx| this.apply_edits(window, cx));
+        Ok(())
+    }
+
+    fn run_editor_command(&self, id: EditorId, command: EditorCommand, cx: &mut App) {
         with_workspace(cx, move |this, window, cx| {
-            this.replace_selection(&text, expand_before, expand_after, window, cx)
+            this.run_editor_command(id, command, window, cx)
         });
-    }
-
-    fn undo(&self, _: &mut Window, cx: &mut App) {
-        with_workspace(cx, |this, window, cx| this.undo(window, cx));
-    }
-
-    fn redo(&self, _: &mut Window, cx: &mut App) {
-        with_workspace(cx, |this, window, cx| this.redo(window, cx));
     }
 
     fn new_note(&self, folder: Option<VaultPath>, _: &mut Window, cx: &mut App) {

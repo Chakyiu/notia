@@ -134,6 +134,189 @@
 
   const panels = new Map();
 
+  // Counts calls from Notia. An editor reads its note again in each call,
+  // since the user may have typed in between.
+  let turn = 0;
+
+  const clamp = (value, min, max) => Math.min(max, Math.max(min, Math.trunc(Number(value)) || 0));
+
+  // Positions are 0-based lines and columns, both counted like string
+  // indices. `state` is what "editor.get" returned.
+  const lineStarts = (state) => {
+    if (!state.lineStarts) {
+      const starts = [0];
+      for (let at = state.text.indexOf("\n"); at !== -1; at = state.text.indexOf("\n", at + 1)) {
+        starts.push(at + 1);
+      }
+      state.lineStarts = starts;
+    }
+    return state.lineStarts;
+  };
+
+  // Where a line's text ends, before its "\n" or "\r\n".
+  const lineEnd = (state, line) => {
+    const starts = lineStarts(state);
+    if (line + 1 >= starts.length) return state.text.length;
+    const newline = starts[line + 1] - 1;
+    return newline > starts[line] && state.text[newline - 1] === "\r" ? newline - 1 : newline;
+  };
+
+  const toOffset = (state, pos) => {
+    const starts = lineStarts(state);
+    const line = clamp(pos?.line, 0, starts.length - 1);
+    return starts[line] + clamp(pos?.ch, 0, lineEnd(state, line) - starts[line]);
+  };
+
+  const toPos = (state, offset) => {
+    const starts = lineStarts(state);
+    offset = clamp(offset, 0, state.text.length);
+    let [low, high] = [0, starts.length - 1];
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if (starts[middle] <= offset) low = middle;
+      else high = middle - 1;
+    }
+    return { line: low, ch: offset - starts[low] };
+  };
+
+  // `changes` as offsets into the text before them, applied to `text`.
+  const applyChanges = (text, changes) => {
+    let result = "";
+    let copied = 0;
+    for (const change of [...changes].sort((a, b) => a.from - b.from || a.to - b.to)) {
+      result += text.slice(copied, change.from) + change.text;
+      copied = change.to;
+    }
+    return result + text.slice(copied);
+  };
+
+  const insertAtCursor = Symbol("insertAtCursor");
+
+  // An open note's text, like Obsidian's `Editor`. Edits go to Notia at
+  // once as offsets, and Notia includes them in what the editor reads next.
+  const makeEditor = (first) => {
+    const id = first.id;
+    let cached = { turn, state: first };
+    const state = () => {
+      if (cached?.turn !== turn) {
+        const next = call("editor.get", id);
+        if (!next) throw new Error(`${first.path} is no longer open`);
+        cached = { turn, state: next };
+      }
+      return cached.state;
+    };
+    const offset = (pos) => toOffset(state(), pos);
+    const pos = (offset) => toPos(state(), offset);
+    const selected = () => {
+      const { anchor, head } = state();
+      return [Math.min(anchor, head), Math.max(anchor, head)];
+    };
+    const span = (from, to) => {
+      const [a, b] = [offset(from), offset(to ?? from)];
+      return [Math.min(a, b), Math.max(a, b)];
+    };
+    // `selection`, if any, is in offsets of the text after the changes.
+    const send = (changes, selection = null) => {
+      call("editor.edit", id, { changes, selection });
+      cached = null;
+    };
+
+    const editor = {
+      getDoc: () => editor,
+      refresh: () => {},
+      getValue: () => state().text,
+      setValue: (text) => send([{ from: 0, to: state().text.length, text: String(text) }]),
+      getLine: (line) => {
+        const starts = lineStarts(state());
+        const n = Math.trunc(Number(line));
+        return n >= 0 && n < starts.length ? state().text.slice(starts[n], lineEnd(state(), n)) : "";
+      },
+      setLine: (line, text) => {
+        const starts = lineStarts(state());
+        const n = Math.trunc(Number(line));
+        if (n >= 0 && n < starts.length) {
+          send([{ from: starts[n], to: lineEnd(state(), n), text: String(text) }]);
+        }
+      },
+      lineCount: () => lineStarts(state()).length,
+      lastLine: () => lineStarts(state()).length - 1,
+      getSelection: () => state().text.slice(...selected()),
+      somethingSelected: () => state().anchor !== state().head,
+      getRange: (from, to) => state().text.slice(...span(from, to)),
+      replaceSelection: (text) => {
+        const [from, to] = selected();
+        text = String(text);
+        const end = from + text.length;
+        send([{ from, to, text }], { anchor: end, head: end });
+      },
+      replaceRange: (text, from, to) => {
+        const [start, end] = span(from, to);
+        send([{ from: start, to: end, text: String(text) }]);
+      },
+      getCursor: (which = "head") => {
+        const [from, to] = selected();
+        if (which === "from") return pos(from);
+        if (which === "to") return pos(to);
+        return pos(which === "anchor" ? state().anchor : state().head);
+      },
+      listSelections: () => [{ anchor: pos(state().anchor), head: pos(state().head) }],
+      setCursor: (position, ch) => {
+        const at = offset(typeof position === "number" ? { line: position, ch } : position);
+        send([], { anchor: at, head: at });
+      },
+      setSelection: (anchor, head) => send([], { anchor: offset(anchor), head: offset(head ?? anchor) }),
+      setSelections: (ranges, main = 0) => {
+        const range = ranges?.[main] ?? ranges?.[0];
+        if (range) editor.setSelection(range.anchor, range.head);
+      },
+      transaction: (transaction = {}) => {
+        const changes = (transaction.changes ?? []).map((change) => {
+          const [from, to] = span(change.from, change.to);
+          return { from, to, text: String(change.text ?? "") };
+        });
+        let selection = null;
+        if (transaction.replaceSelection != null) {
+          const [from, to] = selected();
+          const text = String(transaction.replaceSelection);
+          changes.push({ from, to, text });
+          const end = from + text.length;
+          selection = { anchor: end, head: end };
+        }
+        if (transaction.selection) {
+          const after = { text: applyChanges(state().text, changes) };
+          const { from, to } = transaction.selection;
+          selection = { anchor: toOffset(after, from), head: toOffset(after, to ?? from) };
+        }
+        send(changes, selection);
+      },
+      posToOffset: (position) => offset(position),
+      offsetToPos: (at) => pos(at),
+      wordAt: (position) => {
+        const { text } = state();
+        const word = /[\p{L}\p{N}_]/u;
+        let from = offset(position);
+        let to = from;
+        while (from > 0 && word.test(text[from - 1])) from -= 1;
+        while (to < text.length && word.test(text[to])) to += 1;
+        return from === to ? null : { from: pos(from), to: pos(to) };
+      },
+      focus: () => call("editor.exec", id, "focus"),
+      undo: () => call("editor.exec", id, "undo"),
+      redo: () => call("editor.exec", id, "redo"),
+      [insertAtCursor]: (text) => {
+        const { head } = state();
+        const end = head + text.length;
+        send([{ from: head, to: head, text }], { anchor: end, head: end });
+      },
+    };
+    return Object.freeze(editor);
+  };
+
+  const activeEditor = () => {
+    const state = call("editor.get", null);
+    return state ? makeEditor(state) : null;
+  };
+
   const app = Object.freeze({
     vault: Object.freeze({
       getName: () => call("vault.name"),
@@ -147,15 +330,17 @@
     }),
     workspace: Object.freeze({
       getActiveNote: () => call("workspace.activeNote"),
+      getActiveEditor: () => activeEditor(),
       openNote: (path, options = {}) => call("workspace.openNote", String(path), options),
       openLink: (target, options = {}) => call("workspace.openLink", String(target), options),
       newNote: (folder = null) => call("workspace.newNote", folder === null ? null : String(folder)),
-      insertText: (text) => call("workspace.insertText", String(text)),
-      selection: () => call("workspace.selection"),
-      replaceSelection: (text, expandBefore = 0, expandAfter = 0) =>
-        call("workspace.replaceSelection", String(text), Number(expandBefore) || 0, Number(expandAfter) || 0),
-      undo: () => call("workspace.undo"),
-      redo: () => call("workspace.redo"),
+      insertText: (text) => {
+        const editor = activeEditor();
+        if (editor) {
+          editor[insertAtCursor](String(text));
+          editor.focus();
+        }
+      },
       revealLine: (line) => call("workspace.revealLine", Number(line) || 0),
       search: (query) => call("workspace.search", String(query)),
       runCommand: (id) => call("workspace.runCommand", String(id)),
@@ -189,8 +374,8 @@
       const run =
         typeof editorCallback === "function"
           ? () => {
-              const note = app.workspace.getActiveNote();
-              return note ? editorCallback(note) : undefined;
+              const editor = activeEditor();
+              return editor ? editorCallback(editor, app.workspace.getActiveNote()) : undefined;
             }
           : callback;
       call("addCommand", {
@@ -273,6 +458,7 @@
   let plugin = null;
 
   const start = (namespace, manifestJson) => {
+    turn += 1;
     const manifest = Object.freeze(JSON.parse(manifestJson));
     const commonjs = globalThis.module.exports;
     const PluginClass = [namespace?.default, commonjs?.default, commonjs].find(
@@ -288,6 +474,7 @@
   };
 
   const dispatch = (kind, target, payload) => {
+    turn += 1;
     switch (kind) {
       case "callback": {
         const callback = callbacks.get(Number(target));

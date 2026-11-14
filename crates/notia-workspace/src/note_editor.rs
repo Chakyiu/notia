@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
@@ -13,7 +16,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use notia_plugin::{
-    AppSettings, Notia, OpenOptions, VaultEvent, ViewMode,
+    AppSettings, EditorCommand, EditorId, EditorSelection, EditorSnapshot, EditorTransaction,
+    Notia, OpenOptions, VaultEvent, ViewMode,
     actions::{ToggleReadingView, WORKSPACE_CONTEXT},
     core::VaultPath,
     theme::EditorAppearance,
@@ -22,6 +26,9 @@ use notia_plugin::{
 
 use crate::attachments::{self, image_in_vault};
 use crate::reading::{CALLOUTS, NoteUrl, ReadingMarkdown, parse_note_url, to_reading_markdown};
+
+/// Small, so that plugins written in JavaScript hold editor ids exactly.
+static NEXT_EDITOR_ID: AtomicU64 = AtomicU64::new(1);
 
 pub enum NoteEditorEvent {
     /// The text changed.
@@ -36,6 +43,7 @@ pub enum NoteEditorEvent {
 /// view. Edits are saved shortly after typing pauses.
 pub struct NoteEditor {
     focus_handle: FocusHandle,
+    id: EditorId,
     path: VaultPath,
     title: Entity<InputState>,
     editor: Entity<EditorState>,
@@ -47,6 +55,8 @@ pub struct NoteEditor {
     reading_stale: bool,
     save_task: Option<Task<()>>,
     error: Option<SharedString>,
+    /// Edits plugins made, which need a window to apply. Reads include them.
+    pending_edits: Vec<EditorTransaction>,
     /// Format bars contributed by plugins, drawn above the title.
     toolbars: Vec<AnyView>,
     _subscriptions: Vec<Subscription>,
@@ -91,6 +101,7 @@ impl NoteEditor {
 
         Self {
             focus_handle: cx.focus_handle(),
+            id: EditorId::new(NEXT_EDITOR_ID.fetch_add(1, Ordering::Relaxed)),
             path,
             title,
             editor,
@@ -102,9 +113,14 @@ impl NoteEditor {
             reading_stale: false,
             save_task: None,
             error,
+            pending_edits: Vec::new(),
             toolbars: Vec::new(),
             _subscriptions: subscriptions,
         }
+    }
+
+    pub fn id(&self) -> EditorId {
+        self.id
     }
 
     /// Replaces the format bars shown above the title. Only the visible note
@@ -171,6 +187,7 @@ impl NoteEditor {
 
     /// Moves to a 0-based source line, in either mode.
     pub fn reveal_line(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_edits(window, cx);
         match self.mode {
             ViewMode::Editing | ViewMode::Half => self.editor.update(cx, |editor, cx| {
                 editor.set_cursor_position(Position::new(line as u32, 0), window, cx);
@@ -188,80 +205,107 @@ impl NoteEditor {
         }
     }
 
-    pub fn insert_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode == ViewMode::Reading {
-            self.set_mode(ViewMode::Editing, window, cx);
-        }
-        self.editor
-            .update(cx, |editor, cx| editor.insert(text.to_string(), window, cx));
-        self.mark_edited(cx);
-    }
-
-    /// The selected words and up to two characters on either side of them.
-    pub fn selection_context(&self, cx: &App) -> notia_plugin::workspace::SelectionText {
-        use notia_plugin::workspace::SelectionText;
+    /// The text and selection as plugins see them: with their queued edits.
+    pub fn snapshot(&self, cx: &App) -> EditorSnapshot {
         let state = self.editor.read(cx);
-        let value = state.value().to_string();
-        let range = state.selected_range();
-        let start = range.start.min(value.len());
-        let end = range.end.min(value.len());
-        if !value.is_char_boundary(start) || !value.is_char_boundary(end) || start > end {
-            return SelectionText::default();
+        let mut text = state.value();
+        let mut selection = selection_of(state);
+        if !self.pending_edits.is_empty() {
+            let mut edited = text.to_string();
+            for transaction in &self.pending_edits {
+                if let Ok((after, moved)) = transaction.apply(&edited, selection) {
+                    (edited, selection) = (after, moved);
+                }
+            }
+            text = edited.into();
         }
-        SelectionText {
-            text: value[start..end].to_string(),
-            before: chars_ending_at(&value, start, 2),
-            after: chars_starting_at(&value, end, 2),
+        EditorSnapshot {
+            id: self.id,
+            path: self.path.clone(),
+            mode: self.mode,
+            text,
+            selection,
         }
     }
 
-    /// Replaces the selection. Expands by whole characters when the marks sit
-    /// just outside the words the user selected.
-    pub fn replace_selection(
+    /// Queues a plugin's edit, which needs a window to apply. It must fit
+    /// the text as it will be after the edits queued before it.
+    pub fn queue_edit(&mut self, transaction: EditorTransaction, cx: &App) -> anyhow::Result<()> {
+        let snapshot = self.snapshot(cx);
+        transaction.apply(&snapshot.text, snapshot.selection)?;
+        self.pending_edits.push(transaction);
+        Ok(())
+    }
+
+    /// Applies the queued edits in order, each as one undo step.
+    pub fn apply_edits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_edits.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_edits);
+        let mut edited = false;
+        self.editor.update(cx, |editor, cx| {
+            for transaction in pending {
+                let text = editor.value();
+                let applied = transaction
+                    .apply(&text, selection_of(editor))
+                    .and_then(|(_, selection)| Ok((transaction.merged(&text)?, selection)));
+                let (change, selection) = match applied {
+                    Ok(applied) => applied,
+                    // The note changed under the edit, as when it is reloaded from disk.
+                    Err(error) => {
+                        log::warn!("dropped a plugin's edit of {}: {error:#}", self.path);
+                        continue;
+                    }
+                };
+                let change = change.filter(|change| text[change.range.clone()] != change.text);
+                if let Some(change) = change {
+                    editor.set_selected_range(change.range, cx);
+                    editor.replace(change.text, window, cx);
+                    edited = true;
+                }
+                editor.set_selected_range_with_direction(
+                    selection.range(),
+                    selection.is_reversed(),
+                    cx,
+                );
+            }
+        });
+        if edited {
+            self.mark_edited(cx);
+        }
+    }
+
+    /// Runs a plugin's editor command once the queued edits are applied.
+    pub fn run_command(
         &mut self,
-        text: &str,
-        expand_before: usize,
-        expand_after: usize,
+        command: EditorCommand,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.mode == ViewMode::Reading {
+        self.apply_edits(window, cx);
+        let from_preview = self.mode == ViewMode::Reading;
+        if from_preview {
             self.set_mode(ViewMode::Editing, window, cx);
-        }
-        let text = text.to_string();
-        self.editor.update(cx, |editor, cx| {
-            if expand_before > 0 || expand_after > 0 {
-                let value = editor.value().to_string();
-                let range = editor.selected_range();
-                let start = retreat_chars(&value, range.start, expand_before);
-                let end = advance_chars(&value, range.end, expand_after);
-                editor.set_selected_range(start..end, cx);
-            }
-            editor.replace(text, window, cx);
-        });
-        self.mark_edited(cx);
-    }
-
-    /// Undoes the last edit in the note, using the editor's own history.
-    pub fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.replay(true, window, cx);
-    }
-
-    /// Redoes the last undone edit.
-    pub fn redo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.replay(false, window, cx);
-    }
-
-    fn replay(&mut self, undo: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode == ViewMode::Reading {
-            self.set_mode(ViewMode::Editing, window, cx);
-        }
-        self.editor
-            .update(cx, |editor, cx| editor.focus(window, cx));
-        if undo {
-            window.dispatch_action(Box::new(Undo), cx);
         } else {
-            window.dispatch_action(Box::new(Redo), cx);
+            self.focus(window, cx);
+        }
+        let action: Box<dyn Action> = match command {
+            EditorCommand::Focus => return,
+            EditorCommand::Undo => Box::new(Undo),
+            EditorCommand::Redo => Box::new(Redo),
+        };
+        let target = self.editor.read(cx).focus_handle(cx);
+        if from_preview {
+            // The editor takes actions once it has been drawn. Next-frame
+            // callbacks run before that frame is drawn, so wait for two.
+            window.on_next_frame(move |window, _| {
+                window.on_next_frame(move |window, cx| {
+                    target.dispatch_action(action.as_ref(), window, cx)
+                })
+            });
+        } else {
+            target.dispatch_action(action.as_ref(), window, cx);
         }
     }
 
@@ -382,6 +426,8 @@ impl NoteEditor {
                 };
                 let text = note.text.clone();
                 if *text != *self.text(cx) {
+                    // They were made to the text being replaced.
+                    self.pending_edits.clear();
                     self.editor.update(cx, |editor, cx| {
                         editor.set_value(text.to_string(), window, cx)
                     });
@@ -689,52 +735,13 @@ fn paste_image(
     }
 }
 
-fn chars_ending_at(text: &str, index: usize, count: usize) -> String {
-    let end = index.min(text.len());
-    if !text.is_char_boundary(end) {
-        return String::new();
+fn selection_of(editor: &EditorState) -> EditorSelection {
+    let range = editor.selected_range();
+    if editor.is_selection_reversed() {
+        EditorSelection::new(range.end, range.start)
+    } else {
+        EditorSelection::new(range.start, range.end)
     }
-    let mut start = end;
-    for _ in 0..count {
-        if start == 0 {
-            break;
-        }
-        start = text[..start]
-            .char_indices()
-            .next_back()
-            .map(|(at, _)| at)
-            .unwrap_or(0);
-    }
-    text[start..end].to_string()
-}
-
-fn chars_starting_at(text: &str, index: usize, count: usize) -> String {
-    let end = advance_chars(text, index, count);
-    text.get(index.min(text.len())..end)
-        .unwrap_or("")
-        .to_string()
-}
-
-fn retreat_chars(text: &str, index: usize, count: usize) -> usize {
-    let tail = chars_ending_at(text, index, count);
-    index.min(text.len()).saturating_sub(tail.len())
-}
-
-fn advance_chars(text: &str, index: usize, count: usize) -> usize {
-    let mut index = index.min(text.len());
-    let Some(rest) = text.get(index..) else {
-        return index;
-    };
-    let mut rest = rest;
-    for _ in 0..count {
-        let mut chars = rest.chars();
-        let Some(ch) = chars.next() else {
-            break;
-        };
-        index += ch.len_utf8();
-        rest = chars.as_str();
-    }
-    index
 }
 
 /// Draws `> [!type]` blockquotes as Obsidian-style callouts.

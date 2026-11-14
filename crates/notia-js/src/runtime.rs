@@ -15,8 +15,8 @@ use gpui_kit::{
     component::{WindowExt as _, notification::Notification},
 };
 use notia_plugin::{
-    ActiveNote, Command, Notia, Panel, PluginContext, PluginHost, RibbonItem, StatusItem,
-    VaultEvent, ViewMode, WorkspaceEvent,
+    Command, Notia, Panel, PluginContext, PluginHost, RibbonItem, StatusItem, VaultEvent,
+    WorkspaceEvent, workspace,
 };
 use rquickjs::{
     CatchResultExt as _, Ctx, Error, Exception, Function, Module, Promise,
@@ -25,7 +25,12 @@ use rquickjs::{
 };
 use serde_json::{Value, json};
 
-use crate::{host::Args, manifest::PluginInfo, scope, view::StatusText};
+use crate::{
+    host::{Args, note_json},
+    manifest::PluginInfo,
+    scope,
+    view::StatusText,
+};
 
 /// How long one call into a plugin may run before it is stopped.
 const TIME_LIMIT: Duration = Duration::from_secs(5);
@@ -165,7 +170,7 @@ impl JsRuntime {
         let weak = Rc::downgrade(self);
         ctx.keep_subscription(cx.subscribe(
             &Notia::workspace(cx),
-            move |workspace, event: &WorkspaceEvent, cx| {
+            move |_, event: &WorkspaceEvent, cx| {
                 let Some(js) = weak.upgrade() else {
                     return;
                 };
@@ -175,7 +180,7 @@ impl JsRuntime {
                     _ => return,
                 };
                 if js.listens(name) {
-                    let note = active_note_json(workspace.read(cx).active_note());
+                    let note = note_json(workspace::active_editor(cx).as_ref());
                     js.emit(name, json!([note]), cx);
                 }
             },
@@ -407,22 +412,6 @@ fn host_function<'js>(
         Ok(value) => Ok(value.to_string()),
         Err(message) => Err(Exception::throw_message(ctx, &message)),
     }
-}
-
-pub(crate) fn active_note_json(note: Option<&ActiveNote>) -> Value {
-    note.map_or(Value::Null, |note| {
-        json!({
-            "path": note.path().as_str(),
-            "name": note.path().file_stem(),
-            "text": note.text().as_ref(),
-            "line": note.cursor_line(),
-            "mode": match note.mode() {
-                ViewMode::Editing => "editing",
-                ViewMode::Half => "half",
-                ViewMode::Reading => "preview",
-            },
-        })
-    })
 }
 
 /// Runs `f` with the active window, or any window, once the current update

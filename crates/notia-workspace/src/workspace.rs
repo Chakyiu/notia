@@ -18,8 +18,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use notia_plugin::{
-    ActiveNote, AppSettings, Notia, OpenOptions, Panel, PanelPlacement, PluginHost, VaultEvent,
-    VaultModel, ViewMode, WorkspaceModel,
+    ActiveNote, AppSettings, EditorCommand, EditorId, Notia, OpenOptions, Panel, PanelPlacement,
+    PluginHost, VaultEvent, VaultModel, ViewMode, WorkspaceModel,
     actions::{NewNote, OpenQuickSwitcher, OpenSettings, WORKSPACE_CONTEXT},
     core::VaultPath,
     theme::{ColorScheme, ThemeCatalog},
@@ -380,9 +380,10 @@ impl Workspace {
                 let tab = self.make_tab(editor, window, cx);
                 match self.active_tab {
                     Some(active) if !options.is_new_tab() => {
-                        self.tabs[active]
-                            .editor
-                            .update(cx, |editor, cx| editor.save(cx));
+                        self.tabs[active].editor.update(cx, |editor, cx| {
+                            editor.apply_edits(window, cx);
+                            editor.save(cx);
+                        });
                         self.tabs[active] = tab;
                         active
                     }
@@ -506,7 +507,10 @@ impl Workspace {
             return;
         }
         let tab = self.tabs.remove(ix);
-        tab.editor.update(cx, |editor, cx| editor.save(cx));
+        tab.editor.update(cx, |editor, cx| {
+            editor.apply_edits(window, cx);
+            editor.save(cx);
+        });
         self.active_tab = match self.active_tab {
             _ if self.tabs.is_empty() => None,
             Some(active) if active > ix => Some(active - 1),
@@ -577,42 +581,35 @@ impl Workspace {
         }
     }
 
-    pub(crate) fn insert_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor().cloned() {
-            editor.update(cx, |editor, cx| editor.insert_text(text, window, cx));
+    /// The editor with this id, or the active one for `None`.
+    pub(crate) fn editor(&self, id: Option<EditorId>, cx: &App) -> Option<&Entity<NoteEditor>> {
+        match id {
+            Some(id) => self
+                .tabs
+                .iter()
+                .map(|tab| &tab.editor)
+                .find(|editor| editor.read(cx).id() == id),
+            None => self.active_editor(),
         }
     }
 
-    pub(crate) fn selection(&self, cx: &App) -> notia_plugin::workspace::SelectionText {
-        self.active_editor()
-            .map(|editor| editor.read(cx).selection_context(cx))
-            .unwrap_or_default()
+    /// Applies the edits plugins queued on any open note.
+    pub(crate) fn apply_edits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let editors: Vec<_> = self.tabs.iter().map(|tab| tab.editor.clone()).collect();
+        for editor in editors {
+            editor.update(cx, |editor, cx| editor.apply_edits(window, cx));
+        }
     }
 
-    pub(crate) fn replace_selection(
+    pub(crate) fn run_editor_command(
         &mut self,
-        text: &str,
-        expand_before: usize,
-        expand_after: usize,
+        id: EditorId,
+        command: EditorCommand,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(editor) = self.active_editor().cloned() {
-            editor.update(cx, |editor, cx| {
-                editor.replace_selection(text, expand_before, expand_after, window, cx)
-            });
-        }
-    }
-
-    pub(crate) fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor().cloned() {
-            editor.update(cx, |editor, cx| editor.undo(window, cx));
-        }
-    }
-
-    pub(crate) fn redo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor().cloned() {
-            editor.update(cx, |editor, cx| editor.redo(window, cx));
+        if let Some(editor) = self.editor(Some(id), cx).cloned() {
+            editor.update(cx, |editor, cx| editor.run_command(command, window, cx));
         }
     }
 

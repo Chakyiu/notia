@@ -59,6 +59,8 @@ pub(crate) struct Fingerprint {
 }
 
 pub(crate) struct Found {
+    /// The folder in the plugins folder, which may be a link.
+    pub(crate) folder: PathBuf,
     pub(crate) plugin: Result<PluginInfo, BrokenPlugin>,
     pub(crate) fingerprint: Fingerprint,
 }
@@ -107,6 +109,7 @@ pub(crate) fn discover(dir: &Path) -> Vec<Found> {
                     error: error.into(),
                 });
             Found {
+                folder,
                 plugin,
                 fingerprint,
             }

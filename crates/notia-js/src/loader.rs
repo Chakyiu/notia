@@ -2,7 +2,7 @@
 //! the plugins folder.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -43,15 +43,18 @@ impl Plugin for CommunityPluginsPlugin {
         if let Err(error) = fs::create_dir_all(&dir) {
             log::warn!("could not create {}: {error}", dir.display());
         }
+        let (watcher, task) = watch(&dir, cx).unzip();
+        if let Some(task) = task {
+            ctx.keep_task(task);
+        }
         cx.set_global(Installed {
             dir: dir.clone(),
             plugins: BTreeMap::new(),
+            watcher,
+            linked: BTreeSet::new(),
         });
         // Reading the manifests waits for the app to finish starting.
         cx.defer(reload);
-        if let Some(task) = watch(&dir, cx) {
-            ctx.keep_task(task);
-        }
 
         ctx.add_command(
             Command::new("reload", "Reload community plugins", |_, cx| reload(cx))
@@ -81,6 +84,10 @@ impl Plugin for CommunityPluginsPlugin {
 struct Installed {
     dir: PathBuf,
     plugins: BTreeMap<SharedString, Fingerprint>,
+    watcher: Option<notify::RecommendedWatcher>,
+    /// Where the plugin folders that are links lead. A watch on `dir` does
+    /// not see changes there on macOS, so each is watched too.
+    linked: BTreeSet<PathBuf>,
 }
 
 impl Global for Installed {}
@@ -96,7 +103,9 @@ pub(crate) fn reload(cx: &mut App) {
     };
     let mut previous = std::mem::take(&mut cx.global_mut::<Installed>().plugins);
     let mut current = BTreeMap::new();
-    for found in manifest::discover(&dir) {
+    let discovered = manifest::discover(&dir);
+    watch_linked(discovered.iter().map(|found| found.folder.as_path()), cx);
+    for found in discovered {
         let id = found.id().clone();
         if current.contains_key(&id) {
             log::warn!("ignoring a second community plugin with the id “{id}”");
@@ -143,7 +152,7 @@ pub(crate) fn reload(cx: &mut App) {
 }
 
 /// Reloads plugins when their files change.
-fn watch(dir: &Path, cx: &mut App) -> Option<Task<()>> {
+fn watch(dir: &Path, cx: &mut App) -> Option<(notify::RecommendedWatcher, Task<()>)> {
     let (tx, rx) = smol::channel::bounded::<()>(1);
     let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         let Ok(event) = event else {
@@ -166,8 +175,7 @@ fn watch(dir: &Path, cx: &mut App) -> Option<Task<()>> {
         .inspect_err(|error| log::error!("could not watch {}: {error}", dir.display()))
         .ok()?;
 
-    Some(cx.spawn(async move |cx| {
-        let _watcher = watcher;
+    let task = cx.spawn(async move |cx| {
         while rx.recv().await.is_ok() {
             // Editors and bundlers write in bursts; let the burst settle.
             cx.background_executor()
@@ -176,7 +184,38 @@ fn watch(dir: &Path, cx: &mut App) -> Option<Task<()>> {
             while rx.try_recv().is_ok() {}
             cx.update(reload);
         }
-    }))
+    });
+    Some((watcher, task))
+}
+
+/// Watches where the plugin folders that are links lead, and stops watching
+/// where removed links led.
+fn watch_linked<'a>(folders: impl Iterator<Item = &'a Path>, cx: &mut App) {
+    let Installed {
+        dir,
+        watcher,
+        linked,
+        ..
+    } = cx.global_mut::<Installed>();
+    let Some(watcher) = watcher else {
+        return;
+    };
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+    let targets: BTreeSet<PathBuf> = folders
+        .filter_map(|folder| folder.canonicalize().ok())
+        .filter(|target| !target.starts_with(&dir))
+        .collect();
+    for gone in linked.difference(&targets) {
+        _ = notify::Watcher::unwatch(watcher, gone);
+    }
+    for target in targets.difference(linked) {
+        if let Err(error) =
+            notify::Watcher::watch(watcher, target, notify::RecursiveMode::Recursive)
+        {
+            log::warn!("could not watch {}: {error}", target.display());
+        }
+    }
+    *linked = targets;
 }
 
 /// Opens the plugins folder, with the type definitions of the plugin API

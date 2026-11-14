@@ -9,7 +9,10 @@ use std::rc::Rc;
 use gpui_kit::{App, Context, EventEmitter, Global, SharedString, Window};
 use notia_core::VaultPath;
 
-use crate::ViewMode;
+use crate::{
+    ViewMode,
+    editor::{EditorCommand, EditorId, EditorSnapshot, EditorTransaction},
+};
 
 /// The note in the active tab, as plugins see it.
 #[derive(Clone, Debug, PartialEq)]
@@ -157,24 +160,19 @@ pub trait WorkspaceHandle {
     );
     /// Moves the cursor of the active note to a 0-based line.
     fn reveal_line(&self, line: usize, window: &mut Window, cx: &mut App);
-    /// Inserts text at the cursor of the active note.
-    fn insert_text(&self, text: &str, window: &mut Window, cx: &mut App);
-    /// The active note's selection, read during the current update.
-    fn selection(&self, cx: &App) -> SelectionText;
-    /// Replaces the active selection. `expand_before` and `expand_after` are
-    /// extra characters on either side, used to remove marks around the words.
-    fn replace_selection(
+    /// The editor of an open note, or of the active note when `id` is
+    /// `None`, with the edits it has yet to apply.
+    fn editor(&self, id: Option<EditorId>, cx: &App) -> Option<EditorSnapshot>;
+    /// Queues an edit of an open note. [`Self::editor`] includes it at once;
+    /// the editor applies it, in order, when the current update is over.
+    fn edit(
         &self,
-        text: &str,
-        expand_before: usize,
-        expand_after: usize,
-        window: &mut Window,
+        id: EditorId,
+        transaction: EditorTransaction,
         cx: &mut App,
-    );
-    /// Undoes the last edit in the active note.
-    fn undo(&self, window: &mut Window, cx: &mut App);
-    /// Redoes the last undone edit in the active note.
-    fn redo(&self, window: &mut Window, cx: &mut App);
+    ) -> anyhow::Result<()>;
+    /// Runs `command` in an open note's editor, after its queued edits.
+    fn run_editor_command(&self, id: EditorId, command: EditorCommand, cx: &mut App);
     /// Creates a note in `folder`, or the configured folder, and opens it.
     fn new_note(&self, folder: Option<VaultPath>, window: &mut Window, cx: &mut App);
     /// Opens the sidebar holding a panel and selects the panel.
@@ -223,47 +221,40 @@ pub fn reveal_line(line: usize, window: &mut Window, cx: &mut App) {
     }
 }
 
-pub fn insert_text(text: &str, window: &mut Window, cx: &mut App) {
-    if let Some(handle) = handle(cx) {
-        handle.insert_text(text, window, cx);
+/// Inserts text at the cursor of the active note and focuses it.
+pub fn insert_text(text: &str, _: &mut Window, cx: &mut App) {
+    let Some(editor) = active_editor(cx) else {
+        return;
+    };
+    let insert = EditorTransaction::insert(editor.selection.head, text);
+    match edit(editor.id, insert, cx) {
+        Ok(()) => run_editor_command(editor.id, EditorCommand::Focus, cx),
+        Err(error) => log::warn!("could not insert text: {error:#}"),
     }
 }
 
-pub fn selection(cx: &App) -> SelectionText {
-    handle(cx)
-        .map(|handle| handle.selection(cx))
-        .unwrap_or_default()
+/// The text and selection of the active note, if one is open.
+pub fn active_editor(cx: &App) -> Option<EditorSnapshot> {
+    handle(cx)?.editor(None, cx)
 }
 
-pub fn replace_selection(
-    text: &str,
-    expand_before: usize,
-    expand_after: usize,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    if let Some(handle) = handle(cx) {
-        handle.replace_selection(text, expand_before, expand_after, window, cx);
+/// The text and selection of an open note.
+pub fn editor(id: EditorId, cx: &App) -> Option<EditorSnapshot> {
+    handle(cx)?.editor(Some(id), cx)
+}
+
+/// Changes the text or selection of an open note; see [`EditorTransaction`].
+/// Fails when the note is closed or the edit does not fit its text.
+pub fn edit(id: EditorId, transaction: EditorTransaction, cx: &mut App) -> anyhow::Result<()> {
+    match handle(cx) {
+        Some(handle) => handle.edit(id, transaction, cx),
+        None => Err(anyhow::anyhow!("the workspace is not ready")),
     }
 }
 
-/// The words selected in the active note, plus the characters beside them.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SelectionText {
-    pub text: String,
-    pub before: String,
-    pub after: String,
-}
-
-pub fn undo(window: &mut Window, cx: &mut App) {
+pub fn run_editor_command(id: EditorId, command: EditorCommand, cx: &mut App) {
     if let Some(handle) = handle(cx) {
-        handle.undo(window, cx);
-    }
-}
-
-pub fn redo(window: &mut Window, cx: &mut App) {
-    if let Some(handle) = handle(cx) {
-        handle.redo(window, cx);
+        handle.run_editor_command(id, command, cx);
     }
 }
 

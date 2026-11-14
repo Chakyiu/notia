@@ -1,13 +1,19 @@
 // The plugin API of Notia, for community plugins written in JavaScript or
-// TypeScript. Reference it from a plugin for editor completions:
+// TypeScript.
 //
-//   /// <reference path="../notia.d.ts" />
+// A plugin is a folder with a `manifest.json` and a `main.js` whose default
+// export extends `Plugin`. Notia loads the folders in `<vault>/.notia/plugins`,
+// and folders linked there, so a plugin can live in a repository of its own:
 //
-// A plugin is a folder in `<vault>/.notia/plugins` with a `manifest.json`
-// and a `main.js` whose default export extends `Plugin`. Notia reads only
-// the manifest until the plugin is enabled in Settings → Plugins, then loads
-// `main.js` and calls `onload`. Disabling the plugin calls `onunload` and
-// removes everything it added. Saving its files reloads it.
+//   ln -s ~/code/my-plugin <vault>/.notia/plugins/my-plugin
+//
+// Notia reads only the manifest until the plugin is enabled in Settings →
+// Plugins, then loads `main.js` and calls `onload`. Disabling the plugin calls
+// `onunload` and removes everything it added. Saving its files reloads it.
+//
+// For editor completions, keep a copy of this file in the plugin's folder.
+// The command "Open the community plugins folder" writes the copy matching
+// the running Notia to `.notia/plugins/notia.d.ts`.
 
 declare module "notia" {
   /** The contents of `manifest.json`, plus the plugin's folder. */
@@ -48,7 +54,10 @@ declare module "notia" {
     addRibbonIcon(icon: string, title: string, callback: () => unknown): void;
     /** Adds a text item to the status bar. */
     addStatusBarItem(): StatusBarItem;
-    /** Adds a panel to a sidebar, drawn from the elements `render` returns. */
+    /**
+     * Adds a panel to a sidebar, or a bar above the open note, drawn from the
+     * elements `render` returns.
+     */
     addPanel(options: PanelOptions): PanelHandle;
 
     /** Returns `ref`. Event listeners are removed on unload anyway. */
@@ -81,10 +90,10 @@ declare module "notia" {
     hotkey?: string;
     callback?: () => unknown;
     /**
-     * Instead of `callback`: called with the active note, and listed only
-     * while a note is open.
+     * Instead of `callback`: called with the active note's editor, and
+     * listed only while a note is open.
      */
-    editorCallback?: (note: ActiveNote) => unknown;
+    editorCallback?: (editor: Editor, note: ActiveNote) => unknown;
   }
 
   export interface StatusBarItem {
@@ -222,24 +231,15 @@ declare module "notia" {
 
   export interface Workspace {
     getActiveNote(): ActiveNote | null;
+    /** The editor of the active note, or `null` when no note is open. */
+    getActiveEditor(): Editor | null;
     openNote(path: string, options?: OpenOptions): void;
     /** Opens what a `[[link]]` points at, creating the note if needed. */
     openLink(target: string, options?: { newTab?: boolean }): void;
     /** Creates a note in `folder`, or the configured folder, and opens it. */
     newNote(folder?: string | null): void;
-    /** Inserts text at the cursor of the active note. */
+    /** Inserts text at the cursor of the active note and focuses the note. */
     insertText(text: string): void;
-    /** The selected words, and up to two characters on either side. */
-    selection(): { text: string; before: string; after: string };
-    /**
-     * Replaces the selection. `expandBefore` and `expandAfter` include marks
-     * that sit just outside the selected words.
-     */
-    replaceSelection(text: string, expandBefore?: number, expandAfter?: number): void;
-    /** Undoes the last edit in the active note. */
-    undo(): void;
-    /** Redoes the last undone edit in the active note. */
-    redo(): void;
     /** Moves the cursor of the active note to a 0-based line. */
     revealLine(line: number): void;
     /** Searches the vault, like `"tag:#ideas"` or `"meeting"`. */
@@ -251,6 +251,90 @@ declare module "notia" {
     on(event: "file-open", callback: (note: ActiveNote | null) => unknown): EventRef;
     /** The text of the active note changed. */
     on(event: "editor-change", callback: (note: ActiveNote) => unknown): EventRef;
+  }
+
+  /**
+   * A place in a note: a 0-based line, and a column counted like JavaScript
+   * string indices, in UTF-16 code units.
+   */
+  export interface EditorPosition {
+    line: number;
+    ch: number;
+  }
+
+  export interface EditorRange {
+    from: EditorPosition;
+    to: EditorPosition;
+  }
+
+  /** `head` is the cursor, and `anchor` the end that stays put while selecting. */
+  export interface EditorSelection {
+    anchor: EditorPosition;
+    head: EditorPosition;
+  }
+
+  /** Replaces `from`–`to` with `text`, or inserts it at `from` without `to`. */
+  export interface EditorChange {
+    from: EditorPosition;
+    to?: EditorPosition;
+    text: string;
+  }
+
+  export interface EditorTransaction {
+    /** Positions in the text before any of the changes, which must not overlap. */
+    changes?: EditorChange[];
+    /** Also replaces the selection, and puts the cursor after the new text. */
+    replaceSelection?: string;
+    /** The selection afterwards, as positions in the text after the changes. */
+    selection?: { from: EditorPosition; to?: EditorPosition };
+  }
+
+  /**
+   * The text of an open note, like Obsidian's `Editor`.
+   *
+   * Reads include the edits made through any editor, even before the note
+   * shows them, which it does as soon as the plugin's code returns. Each
+   * edit is one step for undo. An edit that does not set the selection
+   * leaves it on the text it was on.
+   */
+  export interface Editor {
+    getDoc(): Editor;
+    /** Does nothing: notes show edits by themselves. */
+    refresh(): void;
+    getValue(): string;
+    setValue(text: string): void;
+    /** A line without its line break, or `""` past the last line. */
+    getLine(line: number): string;
+    setLine(line: number, text: string): void;
+    lineCount(): number;
+    lastLine(): number;
+    getSelection(): string;
+    somethingSelected(): boolean;
+    getRange(from: EditorPosition, to: EditorPosition): string;
+    /** Replaces the selection and puts the cursor after the new text. */
+    replaceSelection(text: string): void;
+    /** Replaces `from`–`to`, or inserts at `from` without `to`. */
+    replaceRange(text: string, from: EditorPosition, to?: EditorPosition): void;
+    /** Defaults to `"head"`, the cursor. */
+    getCursor(which?: "from" | "to" | "head" | "anchor"): EditorPosition;
+    /** The selection; a note has one. */
+    listSelections(): EditorSelection[];
+    setCursor(position: EditorPosition | number, ch?: number): void;
+    setSelection(anchor: EditorPosition, head?: EditorPosition): void;
+    /** Selects `ranges[main]`, since a note has one selection. */
+    setSelections(ranges: { anchor: EditorPosition; head?: EditorPosition }[], main?: number): void;
+    /** Makes several changes as one step for undo. */
+    transaction(transaction: EditorTransaction): void;
+    posToOffset(position: EditorPosition): number;
+    offsetToPos(offset: number): EditorPosition;
+    /** The run of letters, digits and `_` around `position`. */
+    wordAt(position: EditorPosition): EditorRange | null;
+    /** Puts the keyboard focus in the note's text, leaving preview. */
+    focus(): void;
+    /** Undoes the last edit, like ⌘Z, once the plugin's code returns. */
+    undo(): void;
+    /** Redoes the last undone edit, once the plugin's code returns. */
+    redo(): void;
   }
 
   export interface Metadata {

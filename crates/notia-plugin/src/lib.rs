@@ -30,13 +30,15 @@
 //!
 //! Plugins reach the vault through [`Notia::vault`], follow the open note
 //! through [`Notia::workspace`], and drive the interface through the
-//! functions in [`workspace`].
+//! functions in [`workspace`]. Those functions also read and edit the text
+//! of open notes, as described in [`editor`].
 
 extern crate gpui_kit as gpui;
 
 pub mod actions;
 mod context;
 mod contribution;
+pub mod editor;
 mod host;
 mod manifest;
 mod settings;
@@ -47,6 +49,9 @@ use gpui_kit::{App, AppContext as _, Entity, Global};
 
 pub use context::PluginContext;
 pub use contribution::{Command, NavigationIcon, Panel, PanelPlacement, RibbonItem, StatusItem};
+pub use editor::{
+    EditorChange, EditorCommand, EditorId, EditorSelection, EditorSnapshot, EditorTransaction,
+};
 pub use host::PluginHost;
 pub use manifest::{PluginKind, PluginManifest};
 pub use notia_core as core;

@@ -99,7 +99,7 @@ Core plugins are Rust and ship with the app. Turn them off in **Settings → Plu
 | Date and time | Inserts the current date or time |
 | Theme gallery | Extra themes and the theme picker |
 
-Community plugins are JavaScript, installed like Obsidian's. Each one is a folder in `.notia/plugins` with a `manifest.json` and a `main.js`. Notia lists a plugin from its manifest and loads the code only after you enable it. Turning it off unloads it. Saving its files reloads it. The API is in `crates/notia-js/notia.d.ts`, and Notia copies that file to `.notia/plugins/notia.d.ts` for editor completions.
+Community plugins are JavaScript, installed like Obsidian's. Each one is a folder in `.notia/plugins`, or a link there to a folder elsewhere, with a `manifest.json` and a `main.js`. Notia lists a plugin from its manifest and loads the code only after you enable it. Turning it off unloads it. Saving its files reloads it, including through a link. The API is in `crates/notia-js/notia.d.ts`, and Notia copies that file to `.notia/plugins/notia.d.ts` for editor completions.
 
 ```js
 import { Plugin, Notice } from "notia";
@@ -115,7 +115,13 @@ export default class Hello extends Plugin {
 }
 ```
 
-A plugin can add commands, ribbon buttons, status bar items, and sidebar panels, and it can read and write notes.
+A plugin can add commands, ribbon buttons, status bar items, sidebar panels, and bars above the open note. It can read and write notes, and change the open note through an `Editor` like Obsidian's: `app.workspace.getActiveEditor()`, or the first argument of a command's `editorCallback`.
+
+A plugin is written only against this API, so it can live in a repository of its own. Link its folder into a vault and keep a copy of `notia.d.ts` beside its `main.js`:
+
+```
+ln -s ~/code/my-plugin ~/Notes/.notia/plugins/my-plugin
+```
 
 Rust plugins implement the `Plugin` trait and register through a `PluginContext`. The core plugins in `crates/notia-plugins` are written only against that public API.
 

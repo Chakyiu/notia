@@ -1,12 +1,21 @@
 //! Runs community plugins in a headless Notia: loading them lazily, their
 //! API, their failures and reloading them.
 
-use std::{fs, path::Path, sync::Arc, time::Duration};
+use std::{
+    fs,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gpui_kit::{
     AnyWindowHandle, Bounds, HeadlessAppContext, WindowBounds, WindowOptions, px, size,
 };
-use notia_plugin::{PluginHost, core::Vault};
+use notia_plugin::{
+    EditorSelection, EditorSnapshot, Notia, OpenOptions, PluginHost,
+    core::{Vault, VaultPath},
+    workspace,
+};
 
 const PROBE: &str = r#"
 import { Plugin, ui } from "notia";
@@ -53,6 +62,99 @@ module.exports = class extends Plugin {
 };
 "#;
 
+/// Edits the open note through the `Editor` API and records what it read.
+const EDITING: &str = r#"
+import { Plugin } from "notia";
+
+export default class Editing extends Plugin {
+  onload() {
+    this.registerEvent(this.app.workspace.on("editor-change", (note) => {
+      this.changed = note.text;
+    }));
+    this.addCommand({
+      id: "edit",
+      name: "Edit the note",
+      editorCallback: (editor, note) => {
+        editor.setSelection({ line: 0, ch: 0 }, { line: 0, ch: 5 });
+        const selected = editor.getSelection();
+        editor.replaceSelection(`**${selected}**`);
+        const wrapped = editor.getValue();
+        const cursor = editor.getCursor();
+        editor.replaceRange("> ", { line: 0, ch: 0 });
+        editor.transaction({
+          changes: [{ from: { line: 1, ch: 0 }, to: { line: 1, ch: 3 }, text: "two" }],
+          selection: { from: { line: 1, ch: 0 }, to: { line: 1, ch: 3 } },
+        });
+        let overlap = null;
+        try {
+          editor.transaction({
+            changes: [
+              { from: { line: 0, ch: 0 }, to: { line: 0, ch: 3 }, text: "" },
+              { from: { line: 0, ch: 1 }, to: { line: 0, ch: 4 }, text: "" },
+            ],
+          });
+        } catch (error) {
+          overlap = error.message;
+        }
+        this.saveData({
+          path: note.path,
+          selected,
+          wrapped,
+          cursor,
+          text: editor.getValue(),
+          noteText: this.app.workspace.getActiveNote().text,
+          selection: editor.getSelection(),
+          line: editor.getLine(1),
+          lines: editor.lineCount(),
+          word: editor.wordAt({ line: 0, ch: 5 }),
+          offset: editor.posToOffset({ line: 1, ch: 3 }),
+          overlap,
+        });
+      },
+    });
+    this.addCommand({ id: "insert", name: "Insert", callback: () => this.app.workspace.insertText("😀") });
+    this.addCommand({ id: "undo", name: "Undo", editorCallback: (editor) => editor.undo() });
+    this.addCommand({ id: "redo", name: "Redo", editorCallback: (editor) => editor.redo() });
+    this.addCommand({
+      id: "more",
+      name: "Edit some more",
+      editorCallback: (editor) => {
+        editor.setValue("alpha\r\nbeta\ngamma");
+        const crlf = editor.getLine(0);
+        editor.setLine(1, "BETA");
+        editor.setCursor(2, 2);
+        const cursor = editor.getCursor();
+        const range = editor.getRange({ line: 0, ch: 1 }, { line: 1, ch: 2 });
+        editor.transaction({ replaceSelection: "-" });
+        const after = editor.getCursor();
+        const end = editor.offsetToPos(editor.getValue().length);
+        editor.setSelection(editor.offsetToPos(0), editor.offsetToPos(5));
+        editor.replaceSelection("**alpha**");
+        editor.focus();
+        const selections = editor.listSelections();
+        editor.setSelection({ line: 1, ch: 4 }, { line: 1, ch: 0 });
+        this.saveData({
+          crlf,
+          cursor,
+          range,
+          after,
+          end,
+          last: editor.lastLine(),
+          text: editor.getValue(),
+          selections,
+          reversed: ["from", "to", "anchor", "head"].map((which) => editor.getCursor(which)),
+        });
+      },
+    });
+    this.addCommand({
+      id: "changed",
+      name: "Save the last change",
+      callback: () => this.saveData({ changed: this.changed }),
+    });
+  }
+}
+"#;
+
 fn main() {
     env_logger::builder()
         .parse_env(env_logger::Env::default().default_filter_or("notia_js=debug"))
@@ -75,6 +177,7 @@ fn main() {
         ],
     );
     write_plugin(&plugins, "commonjs", &[("main.js", COMMONJS)]);
+    write_plugin(&plugins, "editing", &[("main.js", EDITING)]);
     write_plugin(
         &plugins,
         "broken",
@@ -101,7 +204,7 @@ fn main() {
     .unwrap();
     fs::write(
         root.join(".notia/plugins.json"),
-        r#"{ "probe": true, "commonjs": true, "broken": true, "slow": true }"#,
+        r#"{ "probe": true, "commonjs": true, "editing": true, "broken": true, "slow": true }"#,
     )
     .unwrap();
 
@@ -188,6 +291,118 @@ fn main() {
         assert!(host.command("commonjs:second").is_some());
     });
 
+    // The editor API: reads include the plugin's own edits, positions count
+    // UTF-16 code units, and each edit is one undo step.
+    let note = VaultPath::new("Editing.md");
+    app.update(|cx| {
+        Notia::vault(cx)
+            .update(cx, |vault, cx| {
+                vault.save_note(&note, "Héllo wörld 😀\none line\n", cx)
+            })
+            .expect("write a note to edit");
+    });
+    app.open(&note);
+    app.run_command("editing:edit");
+    let edited = "> **Héllo** wörld 😀\ntwo line\n";
+    let seen: serde_json::Value =
+        serde_json::from_str(&read(&plugins, "editing/data.json")).unwrap();
+    assert_eq!(seen["path"], "Editing.md");
+    assert_eq!(seen["selected"], "Héllo");
+    assert_eq!(seen["wrapped"], "**Héllo** wörld 😀\none line\n");
+    assert_eq!(seen["cursor"], serde_json::json!({ "line": 0, "ch": 9 }));
+    assert_eq!(seen["text"], edited);
+    assert_eq!(seen["noteText"], edited);
+    assert_eq!(seen["selection"], "two");
+    assert_eq!(seen["line"], "two line");
+    assert_eq!(seen["lines"], 3);
+    assert_eq!(
+        seen["word"],
+        serde_json::json!({ "from": { "line": 0, "ch": 4 }, "to": { "line": 0, "ch": 9 } })
+    );
+    assert_eq!(seen["offset"], 24);
+    assert!(
+        seen["overlap"]
+            .as_str()
+            .is_some_and(|error| error.contains("overlap")),
+        "{seen}"
+    );
+    let editor = app.editor();
+    assert_eq!(editor.text.as_ref(), edited);
+    // Bytes: "> **Héllo** wörld 😀\n" is 25 long.
+    assert_eq!(editor.selection, EditorSelection::new(25, 28));
+
+    app.run_command("editing:insert");
+    let inserted = "> **Héllo** wörld 😀\ntwo😀 line\n";
+    assert_eq!(app.editor().text.as_ref(), inserted);
+    app.run_command("editing:undo");
+    assert_eq!(app.editor().text.as_ref(), edited);
+    app.run_command("editing:redo");
+    assert_eq!(app.editor().text.as_ref(), inserted);
+    app.run_command("editing:undo");
+    assert_eq!(app.editor().text.as_ref(), edited);
+    app.run_command("editing:changed");
+    let seen: serde_json::Value =
+        serde_json::from_str(&read(&plugins, "editing/data.json")).unwrap();
+    assert_eq!(seen["changed"], edited);
+    app.advance(Duration::from_secs(2));
+    assert_eq!(read(root, "Editing.md"), edited);
+
+    app.run_command("editing:more");
+    let more = "**alpha**\r\nBETA\nga-mma";
+    let seen: serde_json::Value =
+        serde_json::from_str(&read(&plugins, "editing/data.json")).unwrap();
+    let pos = |line: u32, ch: u32| serde_json::json!({ "line": line, "ch": ch });
+    assert_eq!(seen["crlf"], "alpha");
+    assert_eq!(seen["cursor"], pos(2, 2));
+    assert_eq!(seen["range"], "lpha\r\nBE");
+    assert_eq!(seen["after"], pos(2, 3));
+    assert_eq!(seen["end"], pos(2, 6));
+    assert_eq!(seen["last"], 2);
+    assert_eq!(seen["text"], more);
+    assert_eq!(
+        seen["selections"],
+        serde_json::json!([{ "anchor": pos(0, 9), "head": pos(0, 9) }])
+    );
+    assert_eq!(
+        seen["reversed"],
+        serde_json::json!([pos(1, 0), pos(1, 4), pos(1, 4), pos(1, 0)])
+    );
+    let editor = app.editor();
+    assert_eq!(editor.text.as_ref(), more);
+    // Bytes: "**alpha**\r\n" is 11 long.
+    assert_eq!(editor.selection, EditorSelection::new(15, 11));
+
+    // A plugin folder linked from outside the vault reloads when it changes.
+    #[cfg(unix)]
+    {
+        let elsewhere = tempfile::tempdir().expect("create a folder outside the vault");
+        let linked = |name: &str| {
+            format!(
+                r#"import {{ Plugin }} from "notia";
+export default class extends Plugin {{
+  onload() {{ this.addCommand({{ id: "{name}", name: "{name}", callback: () => {{}} }}); }}
+}}"#
+            )
+        };
+        write_plugin(elsewhere.path(), "linked", &[("main.js", &linked("first"))]);
+        std::os::unix::fs::symlink(elsewhere.path().join("linked"), plugins.join("linked"))
+            .unwrap();
+        assert!(app.wait_until(|host| {
+            host.plugins()
+                .any(|(manifest, _)| manifest.id() == "linked")
+        }));
+        app.update(|cx| PluginHost::set_enabled("linked", true, cx));
+        app.read(|host| assert!(host.command("linked:first").is_some()));
+        // Let the rest of the events about the new link pass, so that only
+        // the change below can reload the plugin.
+        app.idle(Duration::from_secs(2));
+        fs::write(elsewhere.path().join("linked/main.js"), linked("second")).unwrap();
+        assert!(
+            app.wait_until(|host| host.command("linked:second").is_some()),
+            "saving a linked plugin did not reload it"
+        );
+    }
+
     // Turning off the loader removes every community plugin.
     app.update(|cx| PluginHost::set_enabled("community-plugins", false, cx));
     app.read(|host| {
@@ -270,6 +485,43 @@ impl App {
 
     fn read<R>(&mut self, f: impl FnOnce(&PluginHost) -> R) -> R {
         self.cx.update(|cx| f(PluginHost::global(cx)))
+    }
+
+    /// Lets real time pass for the file watcher, moving the clock along.
+    fn idle(&mut self, real: Duration) {
+        let until = Instant::now() + real;
+        while Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(100));
+            self.advance(Duration::from_millis(400));
+        }
+    }
+
+    /// Waits up to ten seconds of real time for the file watcher.
+    fn wait_until(&mut self, mut done: impl FnMut(&PluginHost) -> bool) -> bool {
+        let until = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < until {
+            self.idle(Duration::from_millis(100));
+            if self.read(&mut done) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn open(&mut self, path: &VaultPath) {
+        self.cx
+            .update_window(self.window, |_, window, cx| {
+                workspace::open_note(path.clone(), OpenOptions::new(), window, cx)
+            })
+            .expect("open a note");
+        self.settle();
+    }
+
+    /// The active note's editor.
+    fn editor(&mut self) -> EditorSnapshot {
+        self.cx
+            .update(|cx| workspace::active_editor(cx))
+            .expect("a note is open")
     }
 
     fn run_command(&mut self, id: &str) {

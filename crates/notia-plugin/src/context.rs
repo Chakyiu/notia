@@ -1,7 +1,7 @@
 use gpui_kit::{App, SharedString, Subscription, Task};
 use notia_theme::{ThemePack, ThemeSource};
 
-use crate::{Command, NavigationIcon, Panel, RibbonItem, SettingsTab, StatusItem};
+use crate::{Command, NavigationIcon, Panel, RibbonItem, SettingsTab, StatusItem, TabBarItem};
 
 pub(crate) type DeactivateHook = Box<dyn FnOnce(&mut App)>;
 
@@ -14,6 +14,7 @@ pub struct PluginContext {
     pub(crate) ribbon_items: Vec<RibbonItem>,
     pub(crate) panels: Vec<Panel>,
     pub(crate) status_items: Vec<StatusItem>,
+    pub(crate) tab_bar_items: Vec<TabBarItem>,
     pub(crate) navigation_icons: Vec<NavigationIcon>,
     pub(crate) settings_tabs: Vec<SettingsTab>,
     pub(crate) themes: Vec<ThemePack>,
@@ -30,6 +31,7 @@ impl PluginContext {
             ribbon_items: Vec::new(),
             panels: Vec::new(),
             status_items: Vec::new(),
+            tab_bar_items: Vec::new(),
             navigation_icons: Vec::new(),
             settings_tabs: Vec::new(),
             themes: Vec::new(),
@@ -57,6 +59,11 @@ impl PluginContext {
 
     pub fn add_status_item(&mut self, item: StatusItem) {
         self.status_items.push(item.qualified(&self.plugin_id));
+    }
+
+    /// Adds a view at the right of the note tab bar.
+    pub fn add_tab_bar_item(&mut self, item: TabBarItem) {
+        self.tab_bar_items.push(item.qualified(&self.plugin_id));
     }
 
     /// Contributes icons for the file navigation. Plugins are asked from

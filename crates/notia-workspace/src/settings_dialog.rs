@@ -20,15 +20,18 @@ pub(crate) fn open_settings(window: &mut Window, cx: &mut App) {
     }
     window.open_dialog(cx, |dialog, window, cx| {
         let height = (window.viewport_size().height - px(120.)).min(px(680.));
-        // Plugin pages come last, so enabling a plugin leaves the others in place.
-        let mut pages = vec![
+        // Sync sits with the built-in pages. Other plugin pages come last, so
+        // enabling one leaves the pages above it in place.
+        let (sync, plugins) = plugin_pages(cx);
+        let mut pages = Vec::new();
+        pages.extend(sync);
+        pages.extend([
             appearance_page(cx),
             editor_page(),
             files_page(),
             plugins_page(cx),
             about_page(cx),
-        ];
-        let plugins = plugin_pages(cx);
+        ]);
         if !plugins.is_empty() {
             pages.push(plugin_separator());
             pages.extend(plugins);
@@ -45,31 +48,36 @@ pub(crate) fn open_settings(window: &mut Window, cx: &mut App) {
 /// only because the settings sidebar is a list of pages; nothing selects it
 /// on purpose, and a search hides it.
 fn plugin_separator() -> SettingPage {
-    SettingPage::new("────────────────").resettable(false).group(
-        SettingGroup::new().item(SettingItem::render(|_, _, cx| {
+    SettingPage::new("────────────────")
+        .resettable(false)
+        .group(SettingGroup::new().item(SettingItem::render(|_, _, cx| {
             div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child("Settings added by plugins.")
-        })),
-    )
+        })))
 }
 
-/// A page for each settings tab of an enabled plugin.
-fn plugin_pages(cx: &mut App) -> Vec<SettingPage> {
-    let tabs = PluginHost::global(cx).settings_tabs();
-    tabs.into_iter()
-        .map(|(manifest, tab)| {
-            let title = tab.title().unwrap_or(manifest.name()).clone();
-            let icon = tab
-                .icon()
-                .cloned()
-                .unwrap_or_else(|| Icon::new(Lucide::Puzzle));
-            SettingPage::new(title)
-                .icon(icon)
-                .groups(tab.build(cx).iter().map(setting_group))
-        })
-        .collect()
+/// The Sync page, then every other plugin settings page.
+fn plugin_pages(cx: &mut App) -> (Vec<SettingPage>, Vec<SettingPage>) {
+    let mut sync = Vec::new();
+    let mut rest = Vec::new();
+    for (manifest, tab) in PluginHost::global(cx).settings_tabs() {
+        let title = tab.title().unwrap_or(manifest.name()).clone();
+        let icon = tab
+            .icon()
+            .cloned()
+            .unwrap_or_else(|| Icon::new(Lucide::Puzzle));
+        let page = SettingPage::new(title)
+            .icon(icon)
+            .groups(tab.build(cx).iter().map(setting_group));
+        if manifest.id().as_ref() == "sync" {
+            sync.push(page);
+        } else {
+            rest.push(page);
+        }
+    }
+    (sync, rest)
 }
 
 fn setting_group(section: &SettingsSection) -> SettingGroup {
@@ -345,8 +353,9 @@ fn appearance_page(cx: &App) -> SettingPage {
 }
 
 fn editor_page() -> SettingPage {
-    SettingPage::new("Editor").icon(IconName::FileText).group(
-        SettingGroup::new().items(vec![
+    SettingPage::new("Editor")
+        .icon(IconName::FileText)
+        .group(SettingGroup::new().items(vec![
             SettingItem::new(
                 "Default view for new tabs",
                 SettingField::dropdown(
@@ -399,8 +408,7 @@ fn editor_page() -> SettingPage {
                 ),
             )
             .description("Milliseconds after typing stops before the note is saved."),
-        ]),
-    )
+        ]))
 }
 
 fn files_page() -> SettingPage {

@@ -13,7 +13,7 @@ use notia_theme::ThemeCatalog;
 
 use crate::{
     Command, NavigationIcon, Panel, Plugin, PluginContext, PluginManifest, RibbonItem, SettingsTab,
-    StatusItem,
+    StatusItem, TabBarItem,
     actions::{RunCommand, WORKSPACE_CONTEXT},
     context::DeactivateHook,
 };
@@ -24,6 +24,7 @@ struct Activation {
     ribbon_items: Vec<RibbonItem>,
     panels: Vec<Panel>,
     status_items: Vec<StatusItem>,
+    tab_bar_items: Vec<TabBarItem>,
     navigation_icons: Vec<NavigationIcon>,
     settings_tabs: Vec<SettingsTab>,
     _subscriptions: Vec<Subscription>,
@@ -37,6 +38,7 @@ impl Activation {
         self.ribbon_items.extend(other.ribbon_items);
         self.panels.extend(other.panels);
         self.status_items.extend(other.status_items);
+        self.tab_bar_items.extend(other.tab_bar_items);
         self.navigation_icons.extend(other.navigation_icons);
         self.settings_tabs.extend(other.settings_tabs);
         self._subscriptions.extend(other._subscriptions);
@@ -229,6 +231,7 @@ impl PluginHost {
             ribbon_items,
             panels,
             status_items,
+            tab_bar_items,
             navigation_icons,
             settings_tabs,
             themes,
@@ -247,6 +250,7 @@ impl PluginHost {
             ribbon_items,
             panels,
             status_items,
+            tab_bar_items,
             navigation_icons,
             settings_tabs,
             _subscriptions: subscriptions,
@@ -369,6 +373,16 @@ impl PluginHost {
         let mut items: Vec<StatusItem> = self
             .activations()
             .flat_map(|(_, activation)| activation.status_items.iter().cloned())
+            .collect();
+        items.sort_by(|a, b| (a.order(), a.id()).cmp(&(b.order(), b.id())));
+        items
+    }
+
+    /// Views at the right of the note tab bar, from lowest order to highest.
+    pub fn tab_bar_items(&self) -> Vec<TabBarItem> {
+        let mut items: Vec<TabBarItem> = self
+            .activations()
+            .flat_map(|(_, activation)| activation.tab_bar_items.iter().cloned())
             .collect();
         items.sort_by(|a, b| (a.order(), a.id()).cmp(&(b.order(), b.id())));
         items

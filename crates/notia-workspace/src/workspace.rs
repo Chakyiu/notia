@@ -144,6 +144,7 @@ pub struct Workspace {
     /// built from.
     panel_views: HashMap<SharedString, (u64, AnyView)>,
     status_views: Vec<(SharedString, u64, AnyView)>,
+    tab_bar_views: Vec<(SharedString, u64, AnyView)>,
     pub(crate) palette: Entity<CommandState>,
     pub(crate) palette_open: bool,
     pub(crate) switcher: Entity<CommandState>,
@@ -195,6 +196,7 @@ impl Workspace {
             panels: Vec::new(),
             panel_views: HashMap::new(),
             status_views: Vec::new(),
+            tab_bar_views: Vec::new(),
             palette: cx.new(|cx| CommandState::new(window, cx)),
             palette_open: false,
             switcher: cx.new(|cx| CommandState::new(window, cx)),
@@ -233,6 +235,7 @@ impl Workspace {
         let host = PluginHost::global(cx);
         let panels = host.panels();
         let status_items = host.status_items();
+        let tab_bar_items = host.tab_bar_items();
 
         // A reloaded plugin contributes new instances under the same ids.
         let panel_keys: HashSet<(SharedString, u64)> = panels
@@ -258,6 +261,21 @@ impl Workspace {
             .iter()
             .map(|item| {
                 let view = previous
+                    .remove(&(item.id().clone(), item.instance()))
+                    .unwrap_or_else(|| item.build(window, cx));
+                (item.id().clone(), item.instance(), view)
+            })
+            .collect();
+
+        let mut previous_tabs: HashMap<(SharedString, u64), AnyView> = self
+            .tab_bar_views
+            .drain(..)
+            .map(|(id, instance, view)| ((id, instance), view))
+            .collect();
+        self.tab_bar_views = tab_bar_items
+            .iter()
+            .map(|item| {
+                let view = previous_tabs
                     .remove(&(item.id().clone(), item.instance()))
                     .unwrap_or_else(|| item.build(window, cx));
                 (item.id().clone(), item.instance(), view)
@@ -290,7 +308,11 @@ impl Workspace {
         self.panels
             .iter()
             .filter(|panel| panel.placement() == PanelPlacement::Editor)
-            .filter_map(|panel| self.panel_views.get(panel.id()).map(|(_, view)| view.clone()))
+            .filter_map(|panel| {
+                self.panel_views
+                    .get(panel.id())
+                    .map(|(_, view)| view.clone())
+            })
             .collect()
     }
 
@@ -909,6 +931,11 @@ impl Workspace {
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(NewNote), cx)),
             ))
             .child(div().flex_1().h_full())
+            .children(
+                self.tab_bar_views
+                    .iter()
+                    .map(|(_, _, view)| title_control(view.clone()).pr_2()),
+            )
             .when(!self.right.open, |this| {
                 this.child(title_control(self.sidebar_toggle(PanelPlacement::Right, cx)).pr_2())
             })
@@ -1124,12 +1151,7 @@ impl Render for Workspace {
             Some(editor) => editor.clone().into_any_element(),
             None => self.render_empty_state(window, cx).into_any_element(),
         };
-        let main = div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .bg(background)
-            .child(note);
+        let main = div().flex_1().min_w_0().h_full().bg(background).child(note);
 
         v_flex()
             .id("workspace")

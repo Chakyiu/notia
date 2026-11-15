@@ -8,7 +8,9 @@ use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Editor, EditorState, Input, InputEvent, InputState, Paste, Position, Redo, TabSize, Undo},
+    input::{
+        Editor, EditorState, Input, InputEvent, InputState, Paste, Position, Redo, TabSize, Undo,
+    },
     menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
     text::{MarkdownExtensions, TextView, TextViewState},

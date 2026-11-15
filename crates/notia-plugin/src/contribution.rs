@@ -300,6 +300,58 @@ impl StatusItem {
     }
 }
 
+/// A view at the right of the note tab bar. It can draw nothing, so a plugin
+/// can offer the item and let the user hide it.
+#[derive(Clone)]
+pub struct TabBarItem {
+    id: SharedString,
+    instance: u64,
+    order: i32,
+    build: ViewBuilder,
+}
+
+impl TabBarItem {
+    pub fn new<V: Render>(
+        id: impl Into<SharedString>,
+        build: impl Fn(&mut Window, &mut App) -> Entity<V> + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            instance: next_instance(),
+            order: 0,
+            build: Rc::new(move |window, cx| build(window, cx).into()),
+        }
+    }
+
+    /// Unique to this item and its clones; see [`Panel::instance`].
+    pub fn instance(&self) -> u64 {
+        self.instance
+    }
+
+    /// Lower orders sit further left.
+    pub fn with_order(mut self, order: i32) -> Self {
+        self.order = order;
+        self
+    }
+
+    pub fn id(&self) -> &SharedString {
+        &self.id
+    }
+
+    pub fn order(&self) -> i32 {
+        self.order
+    }
+
+    pub fn build(&self, window: &mut Window, cx: &mut App) -> AnyView {
+        (self.build)(window, cx)
+    }
+
+    pub(crate) fn qualified(mut self, plugin_id: &str) -> Self {
+        self.id = qualify(&self.id, plugin_id);
+        self
+    }
+}
+
 /// An icon for one entry of the file navigation.
 ///
 /// Several plugins may contribute one. They are asked from lowest

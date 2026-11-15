@@ -1,0 +1,33 @@
+[package]
+name = "notia-sync"
+description = "Sync a Notia vault with a server you host."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["client", "server"]
+client = ["dep:ureq"]
+server = ["dep:tiny_http"]
+
+[[bin]]
+name = "notia-sync-server"
+path = "src/bin/notia-sync-server.rs"
+required-features = ["server"]
+
+[dependencies]
+chrono.workspace = true
+getrandom = "0.2"
+notia-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tiny_http = { version = "0.12", optional = true }
+ureq = { version = "3.5", optional = true, default-features = false, features = [
+    "gzip",
+    "rustls",
+] }
+
+[dev-dependencies]
+tempfile = "3"

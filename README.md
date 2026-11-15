@@ -96,6 +96,7 @@ Core plugins are Rust and ship with the app. Turn them off in **Settings → Plu
 | Word count | Words and characters in the status bar |
 | Date and time | Inserts the current date or time |
 | Theme gallery | Nord, Rosé Pine, Catppuccin, and Paper |
+| Sync | Syncs the vault with a server you host |
 
 Community plugins are JavaScript, installed like Obsidian's. Each one is a folder in `.notia/plugins`, or a link there to a folder elsewhere, with a `manifest.json` and a `main.js`. Notia lists a plugin from its manifest and loads the code only after you enable it. Turning it off unloads it. Saving its files reloads it, including through a link. The API is in `crates/notia-js/notia.d.ts`, and Notia copies that file to `.notia/plugins/notia.d.ts` for editor completions.
 
@@ -132,6 +133,23 @@ ln -s ~/code/my-plugin ~/Notes/.notia/plugins/my-plugin
 
 Rust plugins implement the `Plugin` trait and register through a `PluginContext`. The core plugins in `crates/notia-plugins` are written only against that public API. A Rust plugin's settings page is a `SettingsTab`, and `Notia::save_plugin_data` keeps its values in `.notia/plugin-data`.
 
+## Sync
+
+The Sync plugin copies the vault to a server you run. Notes, images, and every other file sync both ways. Files changed on two computers since the last sync are both kept: the local copy stays, and the other is saved beside it as `Note.sync-conflict-<time>.md`.
+
+Settings, appearance, layout, themes, and plugin data live in `.notia` and sync only when **Include config files** is on. Community plugins, the sync token, and the trash stay on the computer where they are.
+
+```
+cargo run -p notia-sync --bin notia-sync-server -- --listen 0.0.0.0:8787
+cargo build -p notia-sync --bin notia-sync-server --release
+```
+
+The first run writes a token to `notia-sync-data/token` and prints it. In **Settings → Sync**, set the server address, such as `http://192.168.1.20:8787`, and that token. Computers that share a vault use the same vault id. Leave the id empty to use the vault folder's name.
+
+`docker/sync` is a Compose example. Copy `.env.example` to `.env`, set `NOTIA_SYNC_TOKEN`, and run `docker compose up --build -d` from that directory. Vaults are stored in the `sync-data` volume.
+
+The token is the only password. Bind the server to a private network, or put HTTPS in front of it. Notia trusts the certificates of the system it runs on.
+
 ## Themes
 
 A theme sets the interface colors, syntax colors, fonts, corner radii, and note typography. The built-in themes are Notia, Nord, Rosé Pine, Catppuccin, and Paper. Pick one in **Settings → Appearance**, or with **Change theme**, which previews each theme as you move through the list.
@@ -148,6 +166,7 @@ To add one, put a folder with a `theme.json` (or a single `.json` file) in `.not
 | `notia-plugin` | The plugin API |
 | `notia-workspace` | The window: ribbon, sidebars, tabs, palette, and settings |
 | `notia-plugins` | The core plugins and bundled themes |
+| `notia-sync` | Vault sync, and the server you host |
 | `notia-js` | Community plugins, run in QuickJS |
 
 The interface is [GPUI](https://gpui.rs) through [gpui-kit](https://crates.io/crates/gpui-kit).

@@ -50,7 +50,9 @@ pub mod workspace;
 use gpui_kit::{App, AppContext as _, Entity, Global};
 
 pub use context::PluginContext;
-pub use contribution::{Command, NavigationIcon, Panel, PanelPlacement, RibbonItem, StatusItem};
+pub use contribution::{
+    Command, NavigationIcon, Panel, PanelPlacement, RibbonItem, StatusItem, TabBarItem,
+};
 pub use editor::{
     EditorChange, EditorCommand, EditorId, EditorSelection, EditorSnapshot, EditorTransaction,
 };

@@ -1,0 +1,33 @@
+# Notia sync server.
+#
+#   cd docker/sync
+#   cp .env.example .env
+#   # set NOTIA_SYNC_TOKEN in .env
+#   docker compose up --build -d
+#
+# In Notia, Settings → Sync uses http://<this host>:8787 and the same token.
+# The token is the only password. Publish the port only on a private network,
+# or put HTTPS in front of this service.
+
+services:
+  sync:
+    build:
+      context: ../..
+      dockerfile: docker/sync/Dockerfile
+    image: notia-sync
+    ports:
+      - "8787:8787"
+    environment:
+      NOTIA_SYNC_TOKEN: ${NOTIA_SYNC_TOKEN:?set NOTIA_SYNC_TOKEN in docker/sync/.env}
+    volumes:
+      - sync-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  sync-data:

@@ -1,0 +1,7 @@
+.git
+target
+dist
+dev
+**/.env
+*.md
+.DS_Store

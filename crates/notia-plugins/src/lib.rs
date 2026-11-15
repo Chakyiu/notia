@@ -9,6 +9,7 @@ mod file_explorer;
 mod file_icons;
 mod outline;
 mod search;
+mod sync;
 mod tags;
 mod theme_gallery;
 mod ui;
@@ -26,6 +27,7 @@ pub use file_explorer::FileExplorerPlugin;
 pub use file_icons::FileIconsPlugin;
 pub use outline::OutlinePlugin;
 pub use search::SearchPlugin;
+pub use sync::SyncPlugin;
 pub use tags::TagsPlugin;
 pub use theme_gallery::ThemeGalleryPlugin;
 pub use word_count::WordCountPlugin;
@@ -55,6 +57,7 @@ pub fn register(cx: &mut App) {
     PluginHost::register(WordCountPlugin, cx);
     PluginHost::register(DateTimePlugin, cx);
     PluginHost::register(ThemeGalleryPlugin, cx);
+    PluginHost::register(SyncPlugin, cx);
 }
 
 #[cfg(test)]

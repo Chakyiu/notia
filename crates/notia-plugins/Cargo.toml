@@ -11,7 +11,7 @@ chrono.workspace = true
 gpui-kit.workspace = true
 log.workspace = true
 notia-plugin.workspace = true
-notia-sync = { workspace = true, default-features = false, features = ["client"] }
+notia-sync = { workspace = true, features = ["client"] }
 serde.workspace = true
 
 [dev-dependencies]

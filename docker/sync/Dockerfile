@@ -1,5 +1,6 @@
 # Build context is the repository root. See docker/sync/compose.yaml.
-FROM rust:1.85-bookworm AS build
+# 1.88 or newer: the sources use let chains, which 1.85 rejects.
+FROM rust:1.100-bookworm AS build
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./

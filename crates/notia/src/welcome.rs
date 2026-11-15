@@ -43,7 +43,7 @@ Back to [[Welcome]].
 ## The window
 
 - The **ribbon** on the far left holds plugin buttons: the theme picker and settings.
-- The **left sidebar** holds the *Files* and *Search* panels; switch them with the icons at its top.
+- The **left sidebar** holds the *Files*, *Search*, and *History* panels; switch them with the icons at its top. *History* lists notes you have opened. `⌘⌥←` and `⌘⌥→` move back and forward through them.
 - The **right sidebar** holds the *Outline*, *Backlinks* and *Tags* panels.
 - The **status bar** at the bottom shows plugin items such as backlinks and word counts.
 
@@ -55,13 +55,14 @@ Drag a sidebar's edge to resize it, and use the buttons in the top corners to hi
 | --- | --- |
 | Command palette | `⌘P` |
 | Quick switcher | `⌘O` |
+| Go back and forward | `⌘⌥←` and `⌘⌥→` |
 | New note | `⌘N` |
 | Cycle edit, half edit, and preview | the button above the note, or `⌘E` |
 | Search in all files | `⌘⇧F` |
 | Change theme | `⌘K` then `⌘T` |
 | Settings | `⌘,` |
 
-On Windows and Linux, use `Ctrl` in place of `⌘`. #getting-started
+On Windows and Linux, use `Ctrl` in place of `⌘` and `Alt` in place of `⌥`. #getting-started
 "#;
 
 const THEMES: &str = r##"# Themes and plugins

@@ -20,18 +20,12 @@ pub(crate) fn open_settings(window: &mut Window, cx: &mut App) {
     }
     window.open_dialog(cx, |dialog, window, cx| {
         let height = (window.viewport_size().height - px(120.)).min(px(680.));
-        // Sync sits with the built-in pages. Other plugin pages come last, so
+        // Sync sits under Files and links. Other plugin pages come last, so
         // enabling one leaves the pages above it in place.
         let (sync, plugins) = plugin_pages(cx);
-        let mut pages = Vec::new();
+        let mut pages = vec![appearance_page(cx), editor_page(), files_page()];
         pages.extend(sync);
-        pages.extend([
-            appearance_page(cx),
-            editor_page(),
-            files_page(),
-            plugins_page(cx),
-            about_page(cx),
-        ]);
+        pages.extend([plugins_page(cx), about_page(cx)]);
         if !plugins.is_empty() {
             pages.push(plugin_separator());
             pages.extend(plugins);

@@ -7,6 +7,7 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName as Lucide;
+use gpui_kit::base::{ToastStack, ToastStackState};
 use gpui_kit::component::{ActiveTheme as _, Icon, WindowExt as _, button::Button, h_flex};
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use notia_plugin::{
@@ -18,6 +19,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 const PLUGIN_ID: &str = "sync";
 const NEED_SERVER: &str = "Add a server in Settings → Sync";
+/// How many notices stay in the pile. Older ones drop off the back.
+const MAX_NOTICES: usize = 4;
 
 pub struct SyncPlugin;
 
@@ -73,6 +76,10 @@ struct SyncController {
     syncing: Option<Task<()>>,
     debounce: Option<Task<()>>,
     check: Option<Task<()>>,
+    /// Notices in the pile, oldest first. The newest is the front card.
+    notices: Vec<(u64, SharedString)>,
+    next_notice: u64,
+    notice_tasks: Vec<Task<()>>,
     _ticker: Task<()>,
     _watch: Subscription,
 }
@@ -111,8 +118,33 @@ impl SyncController {
             syncing: None,
             debounce: Some(debounce),
             check: None,
+            notices: Vec::new(),
+            next_notice: 0,
+            notice_tasks: Vec::new(),
             _ticker: ticker,
             _watch: watch,
+        }
+    }
+
+    /// Adds `message` to the front of the pile, then lets it leave.
+    fn show_notice(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let id = self.next_notice;
+        self.next_notice += 1;
+        self.notices.push((id, message.into()));
+        if self.notices.len() > MAX_NOTICES {
+            self.notices.drain(0..self.notices.len() - MAX_NOTICES);
+        }
+        cx.notify();
+        self.notice_tasks.push(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(4)).await;
+            let _ = this.update(cx, |this, cx| {
+                this.notices.retain(|(notice_id, _)| *notice_id != id);
+                cx.notify();
+            });
+        }));
+        if self.notice_tasks.len() > MAX_NOTICES * 2 {
+            self.notice_tasks
+                .drain(0..self.notice_tasks.len() - MAX_NOTICES);
         }
     }
 
@@ -159,15 +191,18 @@ impl SyncController {
         if !SyncSettings::load(cx).configured() {
             if window.is_some() {
                 self.phase = NEED_SERVER.into();
-                cx.notify();
-                notify(window, NEED_SERVER.to_string(), cx);
+                self.show_notice(NEED_SERVER, cx);
             }
             return;
         }
         if let Err(error) = flush_active_note(cx) {
-            self.phase = format!("Sync failed: {error}").into();
-            cx.notify();
-            notify(window, self.phase.to_string(), cx);
+            let message = format!("Sync failed: {error}");
+            self.phase = message.clone().into();
+            if window.is_some() {
+                self.show_notice(message, cx);
+            } else {
+                cx.notify();
+            }
             return;
         }
         let Some(options) = SyncSettings::load(cx).options(cx) else {
@@ -209,8 +244,11 @@ impl SyncController {
             }
         };
         self.phase = message.clone().into();
-        notify(self.run_window.take(), message, cx);
-        cx.notify();
+        if self.run_window.take().is_some() {
+            self.show_notice(message, cx);
+        } else {
+            cx.notify();
+        }
         if self.queued {
             self.queued = false;
             let window = self.queued_window.take();
@@ -228,18 +266,15 @@ fn request_sync(window: &mut Window, cx: &mut App) {
     controller.update(cx, |this, cx| this.start(Some(window), cx));
 }
 
-fn test_connection(window: &mut Window, cx: &mut App) {
-    let window = window.window_handle();
-    let Some(options) = SyncSettings::load(cx).options(cx) else {
-        let _ = window.update(cx, |_, window, cx| {
-            window.push_notification(NEED_SERVER, cx);
-        });
-        return;
-    };
+fn test_connection(_window: &mut Window, cx: &mut App) {
     let Some(host) = cx.try_global::<SyncHost>() else {
         return;
     };
     let controller = host.controller.clone();
+    let Some(options) = SyncSettings::load(cx).options(cx) else {
+        controller.update(cx, |this, cx| this.show_notice(NEED_SERVER, cx));
+        return;
+    };
     controller.update(cx, |this, cx| {
         this.check = Some(cx.spawn(async move |this, cx| {
             let result = cx
@@ -255,20 +290,11 @@ fn test_connection(window: &mut Window, cx: &mut App) {
                 };
                 if !this.busy {
                     this.phase = message.clone().into();
-                    cx.notify();
                 }
-                notify(Some(window), message, cx);
+                this.show_notice(message, cx);
             });
         }));
     });
-}
-
-fn notify(window: Option<AnyWindowHandle>, message: String, cx: &mut App) {
-    if let Some(window) = window {
-        let _ = window.update(cx, |_, window, cx| {
-            window.push_notification(message, cx);
-        });
-    }
 }
 
 fn flush_active_note(cx: &mut App) -> Result<(), String> {
@@ -291,6 +317,8 @@ fn flush_active_note(cx: &mut App) -> Result<(), String> {
 
 struct SyncStatus {
     _watch: Subscription,
+    /// Kept across frames so the pile can measure itself and remember a hover.
+    stack: ToastStackState,
 }
 
 impl SyncStatus {
@@ -298,26 +326,88 @@ impl SyncStatus {
         let controller = cx.global::<SyncHost>().controller.clone();
         Self {
             _watch: cx.observe(&controller, |_, _, cx| cx.notify()),
+            stack: ToastStackState::default(),
         }
     }
 }
 
 impl Render for SyncStatus {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let phase = cx
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (phase, notices) = cx
             .try_global::<SyncHost>()
-            .map(|host| host.controller.read(cx).phase.clone())
+            .map(|host| {
+                let controller = host.controller.read(cx);
+                (controller.phase.clone(), controller.notices.clone())
+            })
             .unwrap_or_default();
         let visible = SyncSettings::load(cx).show_in_tab_bar && !phase.is_empty();
-        div().id("sync-tab-status").when(visible, |this| {
-            this.px_2()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .cursor_pointer()
-                .child(phase)
-                .on_click(|_, window, cx| request_sync(window, cx))
-        })
+        let toast =
+            (!notices.is_empty()).then(|| sync_notice(&notices, self.stack.clone(), window, cx));
+        div()
+            .id("sync-tab-status")
+            .when(visible, |this| {
+                this.px_2()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .cursor_pointer()
+                    .child(phase)
+                    .on_click(|_, window, cx| request_sync(window, cx))
+            })
+            .children(toast)
     }
+}
+
+/// A pile of cards above the settings panel. That panel is a popup (priority
+/// 100) and paints over the window's own notifications, so this sits higher,
+/// at the bottom right, clear of the panel's close button.
+fn sync_notice(
+    notices: &[(u64, SharedString)],
+    stack: ToastStackState,
+    window: &Window,
+    cx: &App,
+) -> impl IntoElement {
+    let theme = cx.theme();
+    let mut pile = ToastStack::new("sync-notices", stack)
+        .placement(Anchor::BottomRight)
+        .w(px(360.));
+    for (id, message) in notices {
+        let id = *id;
+        pile = pile.item(
+            SharedString::from(format!("sync-notice-{id}")),
+            div()
+                .id(("sync-notice", id))
+                .w_full()
+                .px_4()
+                .py_3()
+                .rounded(theme.radius)
+                .bg(theme.background)
+                .border_1()
+                .border_color(theme.border)
+                .text_sm()
+                .child(message.clone())
+                .on_click(move |_, _, cx| {
+                    let Some(host) = cx.try_global::<SyncHost>() else {
+                        return;
+                    };
+                    let controller = host.controller.clone();
+                    controller.update(cx, |this, cx| {
+                        this.notices.retain(|(notice_id, _)| *notice_id != id);
+                        cx.notify();
+                    });
+                }),
+        );
+    }
+    let size = window.viewport_size();
+    let corner = point(size.width - px(16.), size.height - px(48.));
+    deferred(
+        anchored()
+            .snap_to_window()
+            .anchor(Anchor::BottomRight)
+            .position(corner)
+            .child(pile),
+    )
+    // Above dialogs (`POPUP_PRIORITY` is 100) and below tooltips (200).
+    .with_priority(150)
 }
 
 fn settings_page(_: &mut App) -> Vec<SettingsSection> {

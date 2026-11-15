@@ -1,6 +1,6 @@
 # Notia
 
-Notia is a note-taking app. Notes are plain Markdown files in a folder on your computer, called a vault. The file list, search, outline, backlinks, status bar, and themes are plugins, and each one can be turned off.
+Notia is a note-taking app. Notes are plain Markdown files in a folder on your computer, called a vault. The file list, search, history, outline, backlinks, status bar, and themes are plugins, and each one can be turned off.
 
 ```
 cargo run -p notia
@@ -11,7 +11,7 @@ A folder on the command line opens that vault. Otherwise Notia opens the vault f
 
 ## Build
 
-Notia needs Rust 1.85 or newer, for the 2024 edition.
+Notia needs Rust 1.88 or newer. The 2024 edition needs 1.85, and `let` chains in conditions need 1.88.
 
 On Debian and Ubuntu, the GUI libraries are:
 
@@ -60,12 +60,14 @@ Search accepts `"phrases"`, `tag:#name`, and `path:folder`.
 
 ## Keyboard
 
-On Windows and Linux, Ctrl takes the place of `⌘`. Next and previous tab use Ctrl on every system.
+On Windows and Linux, Ctrl takes the place of `⌘`, and Alt takes the place of `⌥`. Next and previous tab use Ctrl on every system.
 
 | Action | Shortcut |
 | --- | --- |
 | Command palette | `⌘P` |
 | Quick switcher | `⌘O` |
+| Go back | `⌘⌥←` |
+| Go forward | `⌘⌥→` |
 | New note | `⌘N` |
 | Save | `⌘S` |
 | Close tab | `⌘W` |
@@ -90,6 +92,7 @@ Core plugins are Rust and ship with the app. Turn them off in **Settings → Plu
 | Files | The vault tree: open, create, rename, and delete notes and folders |
 | File icons | A folder or file icon beside each item |
 | Search | Search across note names and text |
+| History | Notes you have opened, newest first, and back and forward through them |
 | Outline | Headings of the active note |
 | Backlinks | Notes that link here, and the links this note makes |
 | Tags | Every tag in the vault |

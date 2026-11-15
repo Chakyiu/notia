@@ -17,7 +17,7 @@ notia-plugin = { path = "crates/notia-plugin" }
 notia-workspace = { path = "crates/notia-workspace" }
 notia-plugins = { path = "crates/notia-plugins" }
 notia-js = { path = "crates/notia-js" }
-notia-sync = { path = "crates/notia-sync" }
+notia-sync = { path = "crates/notia-sync", default-features = false }
 
 gpui-kit = { version = "=0.9.1", features = [
     "tree-sitter-markdown",

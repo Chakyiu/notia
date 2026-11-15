@@ -9,7 +9,9 @@ use std::{
 };
 
 use gpui_kit::{
-    AnyWindowHandle, Bounds, HeadlessAppContext, WindowBounds, WindowOptions, px, size,
+    AnyWindowHandle, Bounds, HeadlessAppContext, WindowBounds, WindowOptions,
+    component::{ActiveTheme as _, try_parse_color},
+    px, size,
 };
 use notia_plugin::{
     EditorSelection, EditorSnapshot, Notia, OpenOptions, PluginHost, Setting, SettingControl,
@@ -62,6 +64,30 @@ module.exports = class extends Plugin {
   }
 };
 "#;
+
+/// Paints over the active theme and writes a stylesheet in its own folder.
+const PAINTER: &str = r##"
+import { Plugin } from "notia";
+
+export default class Painter extends Plugin {
+  onload() {
+    const colors = this.setThemeColors({
+      background: "#112233",
+      "primary.background": "#abcdef",
+      "highlight.syntax.title.color": "#445566",
+      "not-a-color": "#112233",
+      foreground: "nope",
+    });
+    this.writeFile("theme.css", ".theme { background: #112233; }\n");
+    this.saveData({ colors, css: this.readFile("theme.css") });
+    this.setFileIcons({
+      folder: "folder-heart",
+      folderOpen: "folder-open",
+      folderColor: "#e0af68",
+    });
+  }
+}
+"##;
 
 /// A settings tab with each kind of control, saving every change.
 const OPTIONS: &str = r#"
@@ -225,6 +251,7 @@ fn main() {
     write_plugin(&plugins, "commonjs", &[("main.js", COMMONJS)]);
     write_plugin(&plugins, "editing", &[("main.js", EDITING)]);
     write_plugin(&plugins, "options", &[("main.js", OPTIONS)]);
+    write_plugin(&plugins, "painter", &[("main.js", PAINTER)]);
     write_plugin(
         &plugins,
         "broken",
@@ -251,7 +278,7 @@ fn main() {
     .unwrap();
     fs::write(
         root.join(".notia/plugins.json"),
-        r#"{ "probe": true, "commonjs": true, "editing": true, "options": true, "broken": true, "slow": true }"#,
+        r#"{ "probe": true, "commonjs": true, "editing": true, "options": true, "broken": true, "slow": true, "painter": true }"#,
     )
     .unwrap();
 
@@ -525,6 +552,33 @@ export default class extends Plugin {{
                 .all(|(manifest, _)| manifest.id() != "options")
         )
     });
+
+    // A plugin can replace theme colors and keep a stylesheet beside its code.
+    // Saving that stylesheet must not reload the plugin.
+    app.read(|host| {
+        assert!(
+            host.error("painter").is_none(),
+            "{:?}",
+            host.error("painter")
+        );
+    });
+    let painted = try_parse_color("#112233").unwrap();
+    app.update(|cx| assert_eq!(cx.theme().background, painted));
+    let painter: serde_json::Value =
+        serde_json::from_str(&read(&plugins, "painter/data.json")).unwrap();
+    let warnings = painter["colors"]["warnings"].to_string();
+    assert!(
+        warnings.contains("not-a-color") && warnings.contains("nope"),
+        "{warnings}"
+    );
+    assert_eq!(
+        painter["css"].as_str(),
+        Some(".theme { background: #112233; }\n")
+    );
+    app.idle(Duration::from_millis(800));
+    app.read(|host| assert!(host.error("painter").is_none()));
+    app.update(|cx| PluginHost::set_enabled("painter", false, cx));
+    app.update(|cx| assert_ne!(cx.theme().background, painted));
 
     // Turning off the loader removes every community plugin.
     app.update(|cx| PluginHost::set_enabled("community-plugins", false, cx));

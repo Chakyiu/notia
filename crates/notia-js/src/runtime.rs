@@ -15,8 +15,8 @@ use gpui_kit::{
     component::{WindowExt as _, notification::Notification},
 };
 use notia_plugin::{
-    Command, Notia, Panel, PluginContext, PluginHost, RibbonItem, SettingsTab, StatusItem,
-    VaultEvent, WorkspaceEvent, workspace,
+    Command, NavigationIcon, Notia, Panel, PluginContext, PluginHost, RibbonItem, SettingsTab,
+    StatusItem, VaultEvent, WorkspaceEvent, workspace,
 };
 use rquickjs::{
     CatchResultExt as _, Ctx, Error, Exception, Function, Module, Promise,
@@ -53,6 +53,7 @@ pub(crate) enum Contribution {
     Panel(Panel),
     StatusItem(StatusItem),
     SettingsTab(SettingsTab),
+    NavigationIcon(NavigationIcon),
 }
 
 impl Contribution {
@@ -63,6 +64,7 @@ impl Contribution {
             Self::Panel(panel) => ctx.add_panel(panel),
             Self::StatusItem(item) => ctx.add_status_item(item),
             Self::SettingsTab(tab) => ctx.add_settings_tab(tab),
+            Self::NavigationIcon(icon) => ctx.add_navigation_icon(icon),
         }
     }
 }
@@ -91,6 +93,7 @@ pub(crate) struct HostState {
     queued_events: Vec<(String, Value)>,
     pub(crate) intervals: HashMap<u64, Task<()>>,
     last_error: Option<(String, Instant)>,
+    pub(crate) file_icons: crate::file_icons::FileIconSlot,
 }
 
 pub(crate) struct JsRuntime {
@@ -220,6 +223,9 @@ impl JsRuntime {
 
     /// Calls `onunload` and stops the plugin's timers.
     fn unload(&self, cx: &mut App) {
+        // Color replacements live on the theme, not on the plugin's
+        // contributions, so disabling the plugin has to clear them itself.
+        notia_plugin::theme::ThemeCatalog::clear_color_overrides(&self.plugin.id, cx);
         self.state.borrow_mut().listened.clear();
         if let Err(error) = self.dispatch("unload", "", "", cx) {
             self.report(&error, cx);

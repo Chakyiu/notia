@@ -13,9 +13,12 @@ pub struct FileIconsPlugin;
 
 impl Plugin for FileIconsPlugin {
     fn manifest(&self) -> PluginManifest {
-        PluginManifest::new("file-icons", "File icons").with_description(
-            "Shows a folder or file icon beside each item in the file navigation.",
-        )
+        PluginManifest::new("file-icons", "File icons")
+            .with_description(
+                "Shows a folder or file icon beside each item in the file navigation.",
+            )
+            // Icons belong to Theme enhancer until someone turns this on.
+            .enabled_by_default(false)
     }
 
     fn activate(&self, ctx: &mut PluginContext, _: &mut App) {
@@ -41,35 +44,7 @@ fn icon_for(path: &VaultPath, kind: EntryKind, expanded: bool, cx: &App) -> Opti
 
 /// The Lucide glyph for an entry. Folders change when they are open.
 fn glyph(path: &VaultPath, kind: EntryKind, expanded: bool) -> Lucide {
-    match kind {
-        EntryKind::Folder if expanded => Lucide::FolderOpen,
-        EntryKind::Folder => Lucide::FolderClosed,
-        EntryKind::Note => Lucide::FileText,
-        EntryKind::Attachment => attachment_glyph(path.extension()),
-    }
-}
-
-fn attachment_glyph(extension: Option<&str>) -> Lucide {
-    let extension = extension.map(|ext| ext.to_ascii_lowercase());
-    match extension.as_deref() {
-        Some(
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif" | "heic"
-            | "tif" | "tiff",
-        ) => Lucide::FileImage,
-        Some("mp3" | "wav" | "ogg" | "flac" | "m4a" | "aac" | "aiff") => Lucide::FileMusic,
-        Some("mp4" | "mov" | "webm" | "mkv" | "avi" | "m4v") => Lucide::FileVideoCamera,
-        Some("zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "bz2" | "xz") => Lucide::FileArchive,
-        Some("csv" | "tsv" | "xls" | "xlsx" | "ods" | "numbers") => Lucide::FileSpreadsheet,
-        Some("pdf" | "doc" | "docx" | "rtf" | "odt" | "pages") => Lucide::FileType,
-        Some(
-            "rs" | "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "py" | "go" | "css" | "scss"
-            | "html" | "htm" | "json" | "toml" | "yaml" | "yml" | "sh" | "bash" | "zsh" | "c" | "h"
-            | "cpp" | "hpp" | "java" | "rb" | "swift" | "kt" | "xml" | "sql" | "vue" | "svelte"
-            | "lua" | "php" | "cs",
-        ) => Lucide::FileCode,
-        Some("txt" | "text" | "log" | "md" | "markdown") => Lucide::FileText,
-        _ => Lucide::File,
-    }
+    notia_plugin::entry_icon(path, kind, expanded)
 }
 
 #[cfg(test)]

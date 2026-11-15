@@ -121,6 +121,17 @@
       value: String(value ?? ""),
       onChange: expectFunction(onChange, "a text input's onChange"),
     }),
+    /**
+     * A multi-line field. `options.id` keeps the field across renders, and
+     * `options.rows` sets how tall it is.
+     */
+    textArea: (value, onChange, options = {}) => ({
+      type: "text_area",
+      value: String(value ?? ""),
+      rows: Number(options.rows) || 14,
+      id: options.id == null ? "" : String(options.id),
+      onChange: expectFunction(onChange, "a text area's onChange"),
+    }),
     numberInput: (value, onChange, options = {}) => ({
       ...options,
       type: "number_input",
@@ -477,6 +488,42 @@
 
     async saveData(data) {
       call("saveData", data ?? null);
+    }
+
+    /**
+     * Reads a text file in the plugin folder, or `null` when it does not
+     * exist. The name is relative to the folder.
+     */
+    readFile(name) {
+      return call("readFile", String(name));
+    }
+
+    /** Writes a text file in the plugin folder. */
+    writeFile(name, text) {
+      call("writeFile", String(name), String(text ?? ""));
+    }
+
+    /** Opens a file in the plugin folder with the system editor. */
+    openFile(name) {
+      call("openFile", String(name));
+    }
+
+    /**
+     * Replaces colors of the active theme. Keys are theme color names, such
+     * as `"primary.background"`, or `"highlight.syntax.title.color"`. An
+     * empty object clears the replacements. Returns `{ warnings }`.
+     */
+    setThemeColors(colors) {
+      return call("setThemeColors", colors ?? {});
+    }
+
+    /**
+     * Replaces the icons in the file list. `null` clears them. `folder` and
+     * `folderOpen` are Lucide names. Colors are `#hex` or a theme color
+     * name. `folders` sets an icon for one path. Returns `{ warnings }`.
+     */
+    setFileIcons(icons) {
+      return call("setFileIcons", icons ?? null);
     }
   }
 

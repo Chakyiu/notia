@@ -45,6 +45,10 @@ fn wraps_by_default() -> bool {
     true
 }
 
+fn default_rows() -> usize {
+    14
+}
+
 /// An element of a panel or settings tab, as made by the `ui` functions of
 /// the plugin API. Handlers are indices into the view's handlers.
 #[derive(Clone, Deserialize)]
@@ -111,6 +115,17 @@ pub(crate) enum Node {
     TextInput {
         #[serde(default)]
         value: String,
+        #[serde(default, rename = "onChange")]
+        on_change: Option<usize>,
+    },
+    /// A multi-line field. `id` keeps the editor across renders.
+    TextArea {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        value: String,
+        #[serde(default = "default_rows")]
+        rows: usize,
         #[serde(default, rename = "onChange")]
         on_change: Option<usize>,
     },
@@ -390,6 +405,7 @@ pub(crate) fn render_node(
         Node::Setting { .. }
         | Node::Toggle { .. }
         | Node::TextInput { .. }
+        | Node::TextArea { .. }
         | Node::NumberInput { .. }
         | Node::Dropdown { .. } => div()
             .text_xs()

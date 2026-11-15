@@ -3,7 +3,9 @@
 
 use std::{
     cell::Cell,
+    collections::BTreeMap,
     fs, io,
+    path::{Component, Path, PathBuf},
     rc::Rc,
     time::{Duration, UNIX_EPOCH},
 };
@@ -189,6 +191,13 @@ impl JsRuntime {
             }
             "loadData" => self.load_data(),
             "saveData" => self.save_data(&args.get(0)?),
+            "readFile" => self.read_file(args.get(0)?),
+            "writeFile" => self.write_file(args.get(0)?, args.get(1)?),
+            "openFile" => self.open_file(args.get(0)?, cx),
+            "setThemeColors" => self.set_theme_colors(args.get(0)?, cx),
+            "setFileIcons" => {
+                self.set_file_icons(args.0.first().cloned().unwrap_or(Value::Null), cx)
+            }
             "setTimer" => {
                 let (id, delay, repeat): (u64, f64, bool) =
                     (args.get(0)?, args.get(1)?, args.get(2)?);
@@ -265,9 +274,8 @@ impl JsRuntime {
         }
         let dirty = Rc::new(Cell::new(true));
         let bar = spec.side == "editor";
-        let view = cx.new(|_| {
-            JsPanel::new(Rc::downgrade(self), spec.id.clone(), dirty.clone(), bar)
-        });
+        let view =
+            cx.new(|_| JsPanel::new(Rc::downgrade(self), spec.id.clone(), dirty.clone(), bar));
         self.state.borrow_mut().panels.insert(
             spec.id.clone(),
             PanelSlot {
@@ -306,7 +314,7 @@ impl JsRuntime {
         Ok(Value::Null)
     }
 
-    fn add(&self, contribution: Contribution) {
+    pub(crate) fn add(&self, contribution: Contribution) {
         self.state.borrow_mut().pending.push(contribution);
     }
 
@@ -326,6 +334,66 @@ impl JsRuntime {
             .and_then(|()| fs::rename(&temp, self.plugin.dir.join("data.json")))
             .map_err(|error| format!("Could not save data.json: {error}"))?;
         Ok(Value::Null)
+    }
+
+    fn read_file(&self, name: String) -> Result<Value, String> {
+        let path = plugin_file(&self.plugin.dir, &name)?;
+        match fs::read(&path) {
+            Ok(bytes) => {
+                if bytes.len() > MAX_PLUGIN_FILE {
+                    return Err(format!("“{name}” is too large"));
+                }
+                String::from_utf8(bytes)
+                    .map(Value::String)
+                    .map_err(|_| format!("“{name}” is not text"))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Value::Null),
+            Err(error) => Err(format!("Could not read “{name}”: {error}")),
+        }
+    }
+
+    fn write_file(&self, name: String, text: String) -> Result<Value, String> {
+        if text.len() > MAX_PLUGIN_FILE {
+            return Err(format!("“{name}” is too large"));
+        }
+        let path = plugin_file(&self.plugin.dir, &name)?;
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).map_err(|error| format!("Could not save “{name}”: {error}"))?;
+        }
+        let temp = self.plugin.dir.join(".plugin-file.notia-tmp");
+        fs::write(&temp, text)
+            .and_then(|()| fs::rename(&temp, &path))
+            .map_err(|error| format!("Could not save “{name}”: {error}"))?;
+        Ok(Value::Null)
+    }
+
+    fn open_file(&self, name: String, cx: &mut App) -> Result<Value, String> {
+        let path = plugin_file(&self.plugin.dir, &name)?;
+        cx.open_with_system(&path);
+        Ok(Value::Null)
+    }
+
+    fn set_theme_colors(&self, colors: Value, cx: &mut App) -> Result<Value, String> {
+        let Some(object) = colors.as_object() else {
+            return Err("theme colors must be an object".to_string());
+        };
+        let mut overrides = BTreeMap::new();
+        let mut warnings = Vec::new();
+        for (key, value) in object {
+            match value {
+                Value::String(color) => {
+                    overrides.insert(key.clone(), color.clone());
+                }
+                Value::Null => {}
+                _ => warnings.push(format!("“{key}” needs a color")),
+            }
+        }
+        warnings.extend(notia_plugin::theme::ThemeCatalog::set_color_overrides(
+            self.plugin.id.as_ref(),
+            overrides,
+            cx,
+        ));
+        Ok(json!({ "warnings": warnings }))
     }
 
     fn set_timer(self: &Rc<Self>, id: u64, delay: f64, repeat: bool, cx: &mut App) {
@@ -692,6 +760,47 @@ fn save(
     vault
         .update(cx, |vault, cx| vault.save_note(path, text, cx))
         .map_err(|error| format!("Could not save “{path}”: {error}"))
+}
+
+/// A stylesheet or other text file a plugin keeps beside its code. A megabyte
+/// is enough for a theme and small enough that a plugin cannot fill the disk.
+const MAX_PLUGIN_FILE: usize = 1024 * 1024;
+
+/// A file inside the plugin folder. `..` and absolute paths stay out, so a
+/// plugin cannot read or write the rest of the vault.
+fn plugin_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    if name.is_empty() || name.contains('\0') {
+        return Err("the file name is empty".to_string());
+    }
+    let rel = Path::new(name);
+    let inside = rel
+        .components()
+        .all(|component| matches!(component, Component::Normal(_) | Component::CurDir));
+    if !inside || rel.is_absolute() {
+        return Err("the file is outside the plugin folder".to_string());
+    }
+    Ok(dir.join(rel))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plugin_file;
+
+    #[test]
+    fn plugin_files_stay_in_the_plugin_folder() {
+        let dir = std::path::Path::new("/vault/.notia/plugins/theme");
+        assert_eq!(
+            plugin_file(dir, "theme.css").unwrap(),
+            dir.join("theme.css")
+        );
+        assert_eq!(
+            plugin_file(dir, "packs/classic.css").unwrap(),
+            dir.join("packs/classic.css")
+        );
+        assert!(plugin_file(dir, "../secret").is_err());
+        assert!(plugin_file(dir, "/etc/passwd").is_err());
+        assert!(plugin_file(dir, "").is_err());
+    }
 }
 
 fn check_id(id: &str, what: &str) -> Result<(), String> {

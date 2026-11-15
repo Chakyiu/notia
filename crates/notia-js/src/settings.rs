@@ -3,13 +3,19 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     rc::{Rc, Weak},
     time::{Duration, Instant},
 };
 
 use gpui_kit::{
-    AnyElement, App, IntoElement as _, ParentElement as _, SharedString, Styled as _, Window,
-    component::ActiveTheme as _, div,
+    AnyElement, App, AppContext as _, Entity, Focusable as _, IntoElement as _, ParentElement as _,
+    SharedString, Styled as _, Subscription, Window,
+    component::{
+        ActiveTheme as _,
+        input::{InputEvent, Textarea, TextareaState},
+    },
+    div, px,
 };
 use notia_plugin::{Setting, SettingsSection};
 use serde::Serialize;
@@ -37,6 +43,19 @@ pub(crate) struct JsSettings {
     rendered_at: Cell<Option<Instant>>,
     /// The top-level elements of the latest render.
     content: RefCell<Result<Vec<Node>, SharedString>>,
+    /// Multi-line fields, kept across renders so typing does not reset them.
+    editors: RefCell<HashMap<String, TextEditor>>,
+}
+
+struct TextEditor {
+    state: Entity<TextareaState>,
+    _sub: Subscription,
+}
+
+struct AreaSpec {
+    value: String,
+    rows: usize,
+    handler: Option<usize>,
 }
 
 impl JsSettings {
@@ -47,6 +66,7 @@ impl JsSettings {
             dirty: Cell::new(true),
             rendered_at: Cell::new(None),
             content: RefCell::new(Ok(Vec::new())),
+            editors: RefCell::new(HashMap::new()),
         }
     }
 
@@ -102,6 +122,7 @@ impl JsSettings {
                     sections.push((Some(text.clone()), Vec::new()));
                     continue;
                 }
+                Node::TextArea { id, .. } => Setting::row(self.textarea(area_key(id, ix))),
                 Node::Setting {
                     name,
                     description,
@@ -139,6 +160,9 @@ impl JsSettings {
             }
             Some(Node::TextInput { .. }) => {
                 Setting::text(name, self.get(ix, text), self.set(ix, text))
+            }
+            Some(Node::TextArea { id, .. }) => {
+                Setting::custom(name, self.textarea(area_key(id, ix)))
             }
             Some(Node::NumberInput { min, max, step, .. }) => Setting::number(
                 name,
@@ -195,6 +219,122 @@ impl JsSettings {
         }
     }
 
+    /// A multi-line field. The same `key` keeps one editor, so a render that
+    /// only changes the text around it does not throw away what is typed.
+    fn textarea(
+        self: &Rc<Self>,
+        key: String,
+    ) -> impl Fn(&mut Window, &mut App) -> AnyElement + 'static {
+        let page = Rc::downgrade(self);
+        move |window, cx| {
+            let Some(page) = page.upgrade() else {
+                return div().into_any_element();
+            };
+            let Some(spec) = page.area_spec(&key) else {
+                return div().into_any_element();
+            };
+            page.ensure_editor(&key, &spec, window, cx);
+            let state = page
+                .editors
+                .borrow()
+                .get(&key)
+                .map(|editor| editor.state.clone());
+            let Some(state) = state else {
+                return div().into_any_element();
+            };
+            let focused = state.read(cx).focus_handle(cx).is_focused(window);
+            let current = state.read(cx).value();
+            // Replacing the text while it is focused would move the cursor.
+            if !focused && current.as_ref() != spec.value {
+                state.update(cx, |state, cx| {
+                    state.set_value(spec.value.clone(), window, cx);
+                });
+            }
+            let rows = spec.rows.clamp(8, 40) as f32;
+            Textarea::new(&state)
+                .w_full()
+                .h(px(rows * 18.))
+                .text_sm()
+                .font_family(cx.theme().mono_font_family.clone())
+                .into_any_element()
+        }
+    }
+
+    fn ensure_editor(
+        self: &Rc<Self>,
+        key: &str,
+        spec: &AreaSpec,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if self.editors.borrow().contains_key(key) {
+            return;
+        }
+        let state = cx.new(|cx| TextareaState::new(window, cx));
+        let initial = spec.value.clone();
+        state.update(cx, |state, cx| state.set_value(initial, window, cx));
+        let page = Rc::downgrade(self);
+        let watched = state.clone();
+        let editor_key = key.to_string();
+        let subscription = cx.subscribe(&state, {
+            let editor_key = editor_key.clone();
+            move |_, event: &InputEvent, cx| {
+                if !matches!(event, InputEvent::Change) {
+                    return;
+                }
+                let Some(page) = page.upgrade() else {
+                    return;
+                };
+                let text = watched.read(cx).value().to_string();
+                let handler = page.area_spec(&editor_key).and_then(|spec| spec.handler);
+                if let Some(handler) = handler {
+                    page.handlers()
+                        .call(handler, vec![serde_json::Value::String(text)], cx);
+                }
+            }
+        });
+        self.editors.borrow_mut().insert(
+            editor_key,
+            TextEditor {
+                state,
+                _sub: subscription,
+            },
+        );
+    }
+
+    fn area_spec(&self, key: &str) -> Option<AreaSpec> {
+        let content = self.content.borrow();
+        let nodes = content.as_ref().ok()?;
+        for (ix, node) in nodes.iter().enumerate() {
+            let (id, value, rows, handler) = match node {
+                Node::TextArea {
+                    id,
+                    value,
+                    rows,
+                    on_change,
+                } => (id, value, *rows, *on_change),
+                Node::Setting { control, .. } => match control.as_deref() {
+                    Some(Node::TextArea {
+                        id,
+                        value,
+                        rows,
+                        on_change,
+                    }) => (id, value, *rows, *on_change),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            if area_key(id, ix) == key {
+                return Some(AreaSpec {
+                    value: value.clone(),
+                    rows,
+                    handler,
+                });
+            }
+        }
+        None
+    }
+
     fn control<R>(&self, ix: usize, f: impl FnOnce(&Node) -> Option<R>) -> Option<R> {
         match self.content.borrow().as_ref().ok()?.get(ix)? {
             Node::Setting {
@@ -227,6 +367,14 @@ impl JsSettings {
                 cx.refresh_windows();
             })),
         }
+    }
+}
+
+fn area_key(id: &str, ix: usize) -> String {
+    if id.is_empty() {
+        format!("index-{ix}")
+    } else {
+        id.to_string()
     }
 }
 

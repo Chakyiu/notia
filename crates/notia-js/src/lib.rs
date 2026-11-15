@@ -23,6 +23,7 @@
 //! everything it registered and drops its runtime. Saving any of its files
 //! reloads it.
 
+mod file_icons;
 mod host;
 mod loader;
 mod manifest;

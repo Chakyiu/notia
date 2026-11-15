@@ -40,6 +40,7 @@ mod context;
 mod contribution;
 pub mod editor;
 mod host;
+mod icons;
 mod manifest;
 mod settings;
 pub mod settings_tab;
@@ -54,6 +55,7 @@ pub use editor::{
     EditorChange, EditorCommand, EditorId, EditorSelection, EditorSnapshot, EditorTransaction,
 };
 pub use host::PluginHost;
+pub use icons::entry_icon;
 pub use manifest::{PluginKind, PluginManifest};
 pub use notia_core as core;
 pub use notia_theme as theme;

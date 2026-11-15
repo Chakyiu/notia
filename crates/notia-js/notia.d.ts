@@ -10,6 +10,7 @@
 // Notia reads only the manifest until the plugin is enabled in Settings →
 // Plugins, then loads `main.js` and calls `onload`. Disabling the plugin calls
 // `onunload` and removes everything it added. Saving its files reloads it.
+// Saving `data.json` or a `.css` file does not: the plugin reads those itself.
 //
 // For editor completions, keep a copy of this file in the plugin's folder.
 // The command "Open the community plugins folder" writes the copy matching
@@ -74,6 +75,54 @@ declare module "notia" {
     loadData(): Promise<any>;
     /** Writes `data` to `data.json` in the plugin folder. */
     saveData(data: unknown): Promise<void>;
+
+    /**
+     * Reads a text file in the plugin folder, or `null` when there is none.
+     * `name` is relative to the folder, such as `"theme.css"`.
+     */
+    readFile(name: string): string | null;
+    /** Writes a text file in the plugin folder. */
+    writeFile(name: string, text: string): void;
+    /** Opens a file in the plugin folder with the system editor. */
+    openFile(name: string): void;
+
+    /**
+     * Replaces colors of the active theme. Keys are the names from a theme
+     * file, such as `"background"` and `"primary.background"`, or
+     * `"highlight."` followed by a highlight name, such as
+     * `"highlight.syntax.title.color"`. Values are `#hex` colors. An empty
+     * object clears every replacement this plugin made. Names and colors
+     * Notia does not know are listed in `warnings` and left unchanged.
+     */
+    setThemeColors(colors: Record<string, string | null>): { warnings: string[] };
+    /**
+     * Replaces the icons in the file list. `folder` and `folderOpen` are
+     * Lucide icon names. A missing color keeps the theme's own color for
+     * that kind of icon. `folders` gives one folder, by its vault path, its
+     * own icon and color. `null` clears the replacement.
+     */
+    setFileIcons(icons: FileIcons | null): { warnings: string[] };
+  }
+
+  /** Icons a plugin draws in the file list, in place of the built-in ones. */
+  export interface FileIcons {
+    /** Lucide name for a closed folder, such as `"folder-closed"`. */
+    folder?: string;
+    /** Lucide name for an open folder. */
+    folderOpen?: string;
+    /** `#hex` or a theme color name. Empty keeps the theme's yellow. */
+    folderColor?: string | null;
+    /** Empty keeps the theme's sidebar color. */
+    noteColor?: string | null;
+    /** Empty keeps the theme's muted color. Attachments keep their glyphs. */
+    fileColor?: string | null;
+    /** One icon for a folder path. A later entry for the same path wins. */
+    folders?: {
+      path: string;
+      icon?: string;
+      open?: string;
+      color?: string | null;
+    }[];
   }
 
   /** Shows a notification. */
@@ -183,6 +232,16 @@ declare module "notia" {
     toggle(value: boolean, onChange: (value: boolean) => unknown): Element;
     /** A text field. `onChange` runs as the text changes. */
     textInput(value: string, onChange: (value: string) => unknown): Element;
+    /**
+     * A multi-line text field. `onChange` runs as the text changes.
+     * `id` keeps the field when the settings page renders again, and `rows`
+     * is how tall it is.
+     */
+    textArea(
+      value: string,
+      onChange: (value: string) => unknown,
+      options?: { id?: string; rows?: number },
+    ): Element;
     /** A number field that keeps the value between `min` and `max`. */
     numberInput(
       value: number,

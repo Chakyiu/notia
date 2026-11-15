@@ -35,6 +35,9 @@ pub struct ThemeCatalog {
     appearance_file: Option<PathBuf>,
     folder: Option<PathBuf>,
     errors: Vec<ThemeLoadError>,
+    /// Color replacements from plugins, keyed by plugin id, drawn over the
+    /// active theme. A later plugin id wins when two name the same color.
+    color_overrides: BTreeMap<String, BTreeMap<String, String>>,
     /// Owns the folder watcher; dropping it stops hot reload.
     _watch: Option<Task<()>>,
 }
@@ -50,6 +53,7 @@ impl ThemeCatalog {
             appearance_file: None,
             folder: None,
             errors: Vec::new(),
+            color_overrides: BTreeMap::new(),
             _watch: None,
         });
         cx.set_global(EditorAppearance::default());
@@ -197,9 +201,55 @@ impl ThemeCatalog {
         Self::set_appearance(appearance, cx);
     }
 
+    /// Replaces the colors a plugin paints over the active theme. Keys are
+    /// the names from a theme file, plus `highlight.` for syntax colors.
+    /// Unknown names and values that are not `#hex` colors are skipped and
+    /// returned. An empty map removes the plugin's replacements.
+    pub fn set_color_overrides(
+        id: impl Into<String>,
+        overrides: BTreeMap<String, String>,
+        cx: &mut App,
+    ) -> Vec<String> {
+        let id = id.into();
+        let (valid, warnings) = crate::overlay::normalize(overrides);
+        let changed = {
+            let catalog = cx.global_mut::<Self>();
+            let existing = catalog.color_overrides.get(&id);
+            let changed = if valid.is_empty() {
+                existing.is_some()
+            } else {
+                existing != Some(&valid)
+            };
+            if valid.is_empty() {
+                catalog.color_overrides.remove(&id);
+            } else if changed {
+                catalog.color_overrides.insert(id, valid);
+            }
+            changed
+        };
+        if changed {
+            Self::apply(cx);
+        }
+        warnings
+    }
+
+    /// Removes the color replacements a plugin added.
+    pub fn clear_color_overrides(id: &str, cx: &mut App) {
+        if cx.global_mut::<Self>().color_overrides.remove(id).is_some() {
+            Self::apply(cx);
+        }
+    }
+
     /// Installs the active theme into GPUI Component and resolves the note
     /// typography. Call it again when the system appearance changes.
     pub fn apply(cx: &mut App) {
+        let color_overrides = Self::global(cx).color_overrides.values().fold(
+            BTreeMap::<String, String>::new(),
+            |mut all, one| {
+                all.extend(one.iter().map(|(key, value)| (key.clone(), value.clone())));
+                all
+            },
+        );
         let catalog = Self::global(cx);
         let appearance = catalog.appearance.clone();
         let mode = catalog.active_mode(cx);
@@ -224,8 +274,17 @@ impl ThemeCatalog {
             None => light.clone(),
         };
         // Fresh allocations make `Theme::update` see a newly installed theme
-        // and not reload the previous one over the overrides below.
-        let fresh = |config: &Rc<ThemeConfig>| Rc::new((**config).clone());
+        // and not reload the previous one over the overrides below. Plugin
+        // color replacements are painted on after the theme's own colors.
+        let fresh = |config: &Rc<ThemeConfig>| {
+            let mut config = (**config).clone();
+            if !color_overrides.is_empty() {
+                for warning in crate::overlay::apply(&mut config, &color_overrides) {
+                    log::warn!("theme color override: {warning}");
+                }
+            }
+            Rc::new(config)
+        };
         let (light, dark, active) = (fresh(&light), fresh(&dark), fresh(&active));
         let defaults = Theme::default();
 

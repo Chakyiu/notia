@@ -29,6 +29,7 @@
 
 mod appearance;
 mod catalog;
+mod overlay;
 mod pack;
 
 pub use appearance::{Appearance, ColorScheme, DEFAULT_THEME_ID, EditorAppearance};

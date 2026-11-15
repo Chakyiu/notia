@@ -23,7 +23,12 @@ pub(crate) fn open_settings(window: &mut Window, cx: &mut App) {
         // Sync sits under Files and links. Other plugin pages come last, so
         // enabling one leaves the pages above it in place.
         let (sync, plugins) = plugin_pages(cx);
-        let mut pages = vec![appearance_page(cx), editor_page(), files_page()];
+        let mut pages = vec![
+            appearance_page(cx),
+            editor_page(),
+            crate::palette_settings::page(cx),
+            files_page(),
+        ];
         pages.extend(sync);
         pages.extend([plugins_page(cx), about_page(cx)]);
         if !plugins.is_empty() {

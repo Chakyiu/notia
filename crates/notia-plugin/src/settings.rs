@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 use gpui_kit::{App, Global};
 use serde::{Deserialize, Serialize};
@@ -78,12 +81,35 @@ impl Default for FileSettings {
     }
 }
 
-/// Vault-wide editor and file settings, saved to `.notia/app.json`.
+/// Which commands the palette lists, and the shortcuts that run them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaletteSettings {
+    /// Whether the shortcut opens the command palette.
+    pub enabled: bool,
+    /// Command ids left out of the palette. Their shortcuts still run them.
+    pub hidden: BTreeSet<String>,
+    /// Replacement shortcuts, by command id. An empty string clears the default.
+    pub hotkeys: BTreeMap<String, String>,
+}
+
+impl Default for PaletteSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hidden: BTreeSet::new(),
+            hotkeys: BTreeMap::new(),
+        }
+    }
+}
+
+/// Vault-wide editor, file, and palette settings, saved to `.notia/app.json`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
     pub editor: EditorSettings,
     pub files: FileSettings,
+    pub palette: PaletteSettings,
 }
 
 impl Global for AppSettings {}
@@ -111,5 +137,18 @@ impl AppSettings {
             crate::write_json(&cx.global::<SettingsPath>().0, &settings);
             cx.set_global(settings);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_palette_settings_stay_enabled() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.palette.enabled);
+        assert!(settings.palette.hidden.is_empty());
+        assert!(settings.palette.hotkeys.is_empty());
     }
 }

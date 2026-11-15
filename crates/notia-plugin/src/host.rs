@@ -217,10 +217,15 @@ impl PluginHost {
         plugin.activate(&mut context, cx);
         let activation = Self::install(id, context, cx);
 
-        let host = cx.global_mut::<Self>();
-        if let Some(ix) = host.position(id) {
-            host.registrations[ix].activation = Some(activation);
+        {
+            let host = cx.global_mut::<Self>();
+            if let Some(ix) = host.position(id) {
+                host.registrations[ix].activation = Some(activation);
+            }
         }
+        // Defaults are bound above. Saved shortcut changes have to follow
+        // them, or a plugin enabled later would keep its original keys.
+        crate::hotkeys::sync(cx);
     }
 
     /// Registers the themes and keybindings a plugin contributed, and keeps

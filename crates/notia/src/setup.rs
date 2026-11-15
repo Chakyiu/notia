@@ -79,6 +79,22 @@ fn config_file() -> PathBuf {
     app_config_dir().join("config.json")
 }
 
+/// The vault a phone keeps in its own sandbox.
+/// `NOTIA_VAULT` overrides it, which is how the Android app points at its files.
+pub fn mobile_vault_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("NOTIA_VAULT").filter(|path| !path.is_empty()) {
+        return PathBuf::from(path);
+    }
+    let home = home_dir();
+    if cfg!(target_os = "ios") {
+        home.join("Documents").join("Vault")
+    } else if cfg!(target_os = "android") {
+        home.join("Vault")
+    } else {
+        home.join("Notia")
+    }
+}
+
 fn app_config_dir() -> PathBuf {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -86,7 +102,7 @@ fn app_config_dir() -> PathBuf {
     let Some(home) = home else {
         return PathBuf::from(".notia");
     };
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", target_os = "ios")) {
         home.join("Library/Application Support/Notia")
     } else if cfg!(target_os = "windows") {
         std::env::var_os("APPDATA")

@@ -10,7 +10,7 @@ pub mod welcome;
 use gpui_kit::*;
 use notia_plugin::{actions::*, core::Vault};
 
-pub use setup::remembered_vault;
+pub use setup::{mobile_vault_dir, remembered_vault};
 
 /// Every Lucide icon, so that any plugin can use any of them by
 /// `gpui_kit::assets::IconName`.
@@ -67,6 +67,51 @@ pub fn open_at(folder: &std::path::Path, seed_if_empty: bool, cx: &mut App) -> R
         .map_err(|error| format!("Could not open the window: {error:#}"))?;
     setup::close(cx);
     Ok(())
+}
+
+/// Shows why the phone could not open its vault. The desktop asks for a
+/// folder instead of using this.
+pub fn open_failure(message: String, cx: &mut App) {
+    ensure_gpui(cx);
+    if !cx.has_global::<notia_plugin::theme::ThemeCatalog>() {
+        notia_plugin::theme::init(cx);
+        notia_plugins::install_bundled_theme(cx);
+    }
+    let message: SharedString = message.into();
+    let opened = gpui_kit::open_window(WindowOptions::default(), cx, move |_, cx| {
+        cx.new(|_| Failure { message })
+    });
+    if let Err(error) = opened {
+        log::error!("could not show the startup error: {error:#}");
+    }
+}
+
+struct Failure {
+    message: SharedString,
+}
+
+impl Render for Failure {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::ActiveTheme as _;
+
+        let theme = cx.theme();
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_6()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .font_family(theme.font_family.clone())
+            .child(
+                div()
+                    .max_w(px(360.))
+                    .text_sm()
+                    .text_color(theme.danger)
+                    .child(self.message.clone()),
+            )
+    }
 }
 
 /// Shows the window that asks where the vault should live.

@@ -40,6 +40,7 @@ mod context;
 mod contribution;
 pub mod editor;
 mod host;
+pub mod hotkeys;
 mod icons;
 mod manifest;
 mod settings;
@@ -57,11 +58,12 @@ pub use editor::{
     EditorChange, EditorCommand, EditorId, EditorSelection, EditorSnapshot, EditorTransaction,
 };
 pub use host::PluginHost;
+pub use hotkeys::PaletteCommand;
 pub use icons::entry_icon;
 pub use manifest::{PluginKind, PluginManifest};
 pub use notia_core as core;
 pub use notia_theme as theme;
-pub use settings::{AppSettings, EditorSettings, FileSettings, ViewMode};
+pub use settings::{AppSettings, EditorSettings, FileSettings, PaletteSettings, ViewMode};
 pub use settings_tab::{Setting, SettingControl, SettingValue, SettingsSection, SettingsTab};
 pub use vault::{VaultEvent, VaultModel};
 pub use workspace::{ActiveNote, OpenOptions, WorkspaceEvent, WorkspaceHandle, WorkspaceModel};

@@ -17,6 +17,9 @@ notia-plugin.workspace = true
 notia-plugins.workspace = true
 notia-workspace.workspace = true
 
+[target.'cfg(target_os = "ios")'.dependencies]
+gpui_ios = { package = "gpui-pre-ios", version = "=0.3.12" }
+
 [dev-dependencies]
 # Turns on the headless app context and renderer of the GPUI that gpui-kit
 # re-exports; gpui-kit's own `test-support` also pulls in GPUI Fast.

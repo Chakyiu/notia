@@ -12,7 +12,7 @@ use gpui_kit::component::{ActiveTheme as _, Icon, WindowExt as _, button::Button
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use notia_plugin::{
     Command, Notia, Plugin, PluginContext, PluginManifest, RibbonItem, Setting, SettingsSection,
-    SettingsTab, TabBarItem,
+    SettingsTab, StatusItem,
 };
 use notia_sync::{MAX_FILE_BYTES, SyncOptions, probe, sync_vault};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -53,7 +53,9 @@ impl Plugin for SyncPlugin {
             )
             .with_order(40),
         );
-        ctx.add_tab_bar_item(TabBarItem::new("state", |_, cx| cx.new(SyncStatus::new)));
+        ctx.add_status_item(
+            StatusItem::new("state", |_, cx| cx.new(SyncStatus::new)).with_order(20),
+        );
         ctx.add_settings_tab(
             SettingsTab::new("options", settings_page).with_icon(Icon::new(Lucide::RefreshCw)),
         );
@@ -340,16 +342,12 @@ impl Render for SyncStatus {
                 (controller.phase.clone(), controller.notices.clone())
             })
             .unwrap_or_default();
-        let visible = SyncSettings::load(cx).show_in_tab_bar && !phase.is_empty();
         let toast =
             (!notices.is_empty()).then(|| sync_notice(&notices, self.stack.clone(), window, cx));
         div()
-            .id("sync-tab-status")
-            .when(visible, |this| {
-                this.px_2()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .cursor_pointer()
+            .id("sync-status")
+            .when(!phase.is_empty(), |this| {
+                this.cursor_pointer()
                     .child(phase)
                     .on_click(|_, window, cx| request_sync(window, cx))
             })
@@ -474,14 +472,6 @@ fn settings_page(_: &mut App) -> Vec<SettingsSection> {
             .with_title("When")
             .settings([
                 Setting::toggle(
-                    "Show in the tab bar",
-                    |cx| SyncSettings::load(cx).show_in_tab_bar,
-                    |value, cx| edit(cx, |settings| settings.show_in_tab_bar = value),
-                )
-                .with_description(
-                    "Shows the sync status at the right of the note tabs. Leave it off to keep the tab bar clear.",
-                ),
-                Setting::toggle(
                     "Sync automatically",
                     |cx| SyncSettings::load(cx).auto,
                     |value, cx| {
@@ -536,8 +526,6 @@ struct SyncSettings {
     auto: bool,
     interval_seconds: u64,
     #[serde(default)]
-    show_in_tab_bar: bool,
-    #[serde(default)]
     include_config: bool,
 }
 
@@ -566,7 +554,6 @@ impl Default for SyncSettings {
             vault_id: String::new(),
             auto: default_auto(),
             interval_seconds: default_interval(),
-            show_in_tab_bar: false,
             include_config: false,
         }
     }
@@ -588,8 +575,6 @@ impl<'de> Deserialize<'de> for SyncSettings {
             /// Older settings stored the interval in minutes.
             interval_minutes: Option<u64>,
             #[serde(default)]
-            show_in_tab_bar: bool,
-            #[serde(default)]
             include_config: bool,
         }
         let stored = Stored::deserialize(deserializer)?;
@@ -608,7 +593,6 @@ impl<'de> Deserialize<'de> for SyncSettings {
             vault_id: stored.vault_id,
             auto: stored.auto,
             interval_seconds,
-            show_in_tab_bar: stored.show_in_tab_bar,
             include_config: stored.include_config,
         })
     }

@@ -48,6 +48,25 @@ The release contains:
 
 The macOS app is signed ad hoc, and the Windows executable is unsigned, so the system asks for confirmation before opening them. Running the workflow by hand, without a tag, builds the same images and keeps them as workflow artifacts.
 
+## Phone
+
+The iPhone and iPad app is the same editor. The vault is created in the app's Documents folder, which the Files app can see, and Sync uses the server you already run. Build it on a Mac with Xcode:
+
+```
+scripts/package-ios.sh            # dist/Notia.app for the simulator
+scripts/package-ios.sh device    # a device build, signed ad hoc
+```
+
+A booted simulator gets the app installed. A phone still needs a development team in Xcode before it will launch. The window is one page at a time: Files, the note, and the right-hand panels.
+
+Android cannot use this window. The interface toolkit has no Android backend, so `android/` is a separate app that edits the same Markdown files and talks to the same sync server. It needs the Android SDK, an NDK, and Rust targets `aarch64-linux-android` and `x86_64-linux-android`.
+
+```
+scripts/package-android.sh
+```
+
+That writes `libnotia_android.so` where Gradle expects it. Open `android/` in Android Studio, or run `./gradlew :app:assembleDebug` from that directory. The phone keeps its vault in the app's private files and asks for the server, token, and vault id. The vault id is the vault folder's name on the computer, unless Settings → Sync sets a different one. The sync token is left out of Android backups.
+
 ## Writing
 
 Notes are `.md` files. `[[Getting around]]` links to a note, and `[[Themes and plugins|how themes work]]` shows different text. Following a link to a note that does not exist creates it. `#tags` are indexed. The editor also handles tasks, `==highlights==`, fenced code, and callouts such as `> [!tip]`.
@@ -60,14 +79,12 @@ Search accepts `"phrases"`, `tag:#name`, and `path:folder`.
 
 ## Keyboard
 
-On Windows and Linux, Ctrl takes the place of `⌘`, and Alt takes the place of `⌥`. Next and previous tab use Ctrl on every system.
+On Windows and Linux, Ctrl takes the place of `⌘`. Next and previous tab use Ctrl on every system.
 
 | Action | Shortcut |
 | --- | --- |
 | Command palette | `⌘P` |
 | Quick switcher | `⌘O` |
-| Go back | `⌘⌥←` |
-| Go forward | `⌘⌥→` |
 | New note | `⌘N` |
 | Save | `⌘S` |
 | Close tab | `⌘W` |
@@ -81,7 +98,7 @@ On Windows and Linux, Ctrl takes the place of `⌘`, and Alt takes the place of 
 | Settings | `⌘,` |
 | Quit | `⌘Q` |
 
-The command palette lists everything else, including inserting the current date or time.
+The command palette lists everything else, including inserting the current date or time. Turn it off, choose which commands are listed, and change shortcuts in **Settings → Command palette**.
 
 ## Plugins
 
@@ -92,7 +109,7 @@ Core plugins are Rust and ship with the app. Turn them off in **Settings → Plu
 | Files | The vault tree: open, create, rename, and delete notes and folders |
 | File icons | A folder or file icon beside each item |
 | Search | Search across note names and text |
-| History | Notes you have opened, newest first, and back and forward through them |
+| History | Each saved version of a note. Compare shows the changes, and a version can be restored. Settings chooses how many to keep |
 | Outline | Headings of the active note |
 | Backlinks | Notes that link here, and the links this note makes |
 | Tags | Every tag in the vault |

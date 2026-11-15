@@ -1,0 +1,23 @@
+[package]
+name = "notia-android"
+description = "Vault, search, and sync for the Notia Android app."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "notia_android"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+notia-core.workspace = true
+notia-sync = { workspace = true, features = ["client"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
+[dev-dependencies]
+tempfile = "3"

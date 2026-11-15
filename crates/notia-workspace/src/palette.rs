@@ -11,13 +11,14 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use notia_plugin::{
-    OpenOptions, PluginHost,
+    OpenOptions, PaletteCommand, PluginHost,
     actions::{
-        CloseTab, EditMode, HalfEditMode, NewNote, OpenQuickSwitcher, OpenSettings, PreviewMode,
-        RunCommand, SaveNote, ToggleLeftSidebar, ToggleReadingView, ToggleRightSidebar,
-        WORKSPACE_CONTEXT,
+        CloseTab, EditMode, HalfEditMode, NewNote, NextTab, OpenCommandPalette, OpenQuickSwitcher,
+        OpenSettings, PreviewMode, PreviousTab, SaveNote, ToggleLeftSidebar, ToggleReadingView,
+        ToggleRightSidebar, WORKSPACE_CONTEXT,
     },
     core::{VaultPath, fuzzy_score},
+    hotkeys,
 };
 
 use crate::Workspace;
@@ -29,61 +30,78 @@ pub(crate) enum SwitcherMatch {
     Create(String),
 }
 
-/// Workspace commands that are always available.
-fn core_commands() -> Vec<(&'static str, Icon, Box<dyn Action>)> {
-    vec![
-        (
-            "Create new note",
-            Icon::new(IconName::Plus),
-            Box::new(NewNote),
-        ),
-        (
-            "Open quick switcher",
-            Icon::new(IconName::Search),
-            Box::new(OpenQuickSwitcher),
-        ),
-        ("Edit mode", Icon::new(Lucide::Pencil), Box::new(EditMode)),
-        (
-            "Half edit mode",
-            Icon::new(Lucide::Columns2),
-            Box::new(HalfEditMode),
-        ),
-        (
-            "Preview mode",
-            Icon::new(Lucide::Eye),
-            Box::new(PreviewMode),
-        ),
-        (
-            "Toggle edit and preview",
-            Icon::new(IconName::BookOpen),
-            Box::new(ToggleReadingView),
-        ),
-        (
-            "Toggle left sidebar",
-            Icon::new(IconName::PanelLeft),
-            Box::new(ToggleLeftSidebar),
-        ),
-        (
-            "Toggle right sidebar",
-            Icon::new(IconName::PanelRight),
-            Box::new(ToggleRightSidebar),
-        ),
-        (
-            "Close current tab",
-            Icon::new(IconName::Close),
-            Box::new(CloseTab),
-        ),
-        (
-            "Save current note",
-            Icon::new(IconName::FileText),
-            Box::new(SaveNote),
-        ),
-        (
-            "Open settings",
-            Icon::new(IconName::Settings),
-            Box::new(OpenSettings),
-        ),
-    ]
+/// Registers built-in commands and binds their default shortcuts.
+pub(crate) fn install(cx: &mut App) {
+    hotkeys::set_core(
+        vec![
+            PaletteCommand::core::<OpenCommandPalette>(
+                "Open command palette",
+                Some("secondary-p"),
+                Some(Icon::new(IconName::SquareTerminal)),
+            ),
+            PaletteCommand::core::<NewNote>(
+                "Create new note",
+                Some("secondary-n"),
+                Some(Icon::new(IconName::Plus)),
+            ),
+            PaletteCommand::core::<OpenQuickSwitcher>(
+                "Open quick switcher",
+                Some("secondary-o"),
+                Some(Icon::new(IconName::Search)),
+            ),
+            PaletteCommand::core::<EditMode>("Edit mode", None, Some(Icon::new(Lucide::Pencil))),
+            PaletteCommand::core::<HalfEditMode>(
+                "Half edit mode",
+                None,
+                Some(Icon::new(Lucide::Columns2)),
+            ),
+            PaletteCommand::core::<PreviewMode>("Preview mode", None, Some(Icon::new(Lucide::Eye))),
+            PaletteCommand::core::<ToggleReadingView>(
+                "Toggle edit and preview",
+                Some("secondary-e"),
+                Some(Icon::new(IconName::BookOpen)),
+            ),
+            PaletteCommand::core::<ToggleLeftSidebar>(
+                "Toggle left sidebar",
+                Some("secondary-\\"),
+                Some(Icon::new(IconName::PanelLeft)),
+            ),
+            PaletteCommand::core::<ToggleRightSidebar>(
+                "Toggle right sidebar",
+                Some("secondary-shift-\\"),
+                Some(Icon::new(IconName::PanelRight)),
+            ),
+            PaletteCommand::core::<CloseTab>(
+                "Close current tab",
+                Some("secondary-w"),
+                Some(Icon::new(IconName::Close)),
+            ),
+            PaletteCommand::core::<SaveNote>(
+                "Save current note",
+                Some("secondary-s"),
+                Some(Icon::new(IconName::FileText)),
+            ),
+            PaletteCommand::core::<OpenSettings>(
+                "Open settings",
+                Some("secondary-,"),
+                Some(Icon::new(IconName::Settings)),
+            ),
+            PaletteCommand::core::<NextTab>(
+                "Next tab",
+                Some("ctrl-tab"),
+                Some(Icon::new(Lucide::ArrowRight)),
+            ),
+            PaletteCommand::core::<PreviousTab>(
+                "Previous tab",
+                Some("ctrl-shift-tab"),
+                Some(Icon::new(Lucide::ArrowLeft)),
+            ),
+        ],
+        cx,
+    );
+    hotkeys::bind_core_defaults(cx);
+    hotkeys::install_capture(cx);
+    hotkeys::sync(cx);
 }
 
 /// A palette row with an icon, a label and the command's keybinding.
@@ -115,20 +133,23 @@ fn command_row(label: SharedString, icon: Option<Icon>, action: Box<dyn Action>)
 
 impl Workspace {
     fn command_items(&self, cx: &App) -> Vec<CommandItem> {
-        let mut rows: Vec<(SharedString, Option<Icon>, Box<dyn Action>)> = core_commands()
-            .into_iter()
-            .map(|(label, icon, action)| (label.into(), Some(icon), action))
-            .collect();
-        for (plugin, command) in PluginHost::global(cx).commands() {
-            if command.is_available(cx) {
-                rows.push((
-                    format!("{plugin}: {}", command.name()).into(),
-                    command.icon().cloned(),
-                    Box::new(RunCommand {
-                        id: command.id().clone(),
-                    }),
-                ));
+        let mut rows: Vec<(SharedString, Option<Icon>, Box<dyn Action>)> = Vec::new();
+        for command in hotkeys::commands(cx) {
+            if !hotkeys::is_listed(&command.id, cx) {
+                continue;
             }
+            if PluginHost::global(cx)
+                .command(&command.id)
+                .is_some_and(|plugin_command| !plugin_command.is_available(cx))
+            {
+                continue;
+            }
+            let label = if command.group.as_ref() == "Notia" {
+                command.name.clone()
+            } else {
+                format!("{}: {}", command.group, command.name).into()
+            };
+            rows.push((label, command.icon.clone(), command.action()));
         }
         rows.sort_by_key(|row| row.0.to_lowercase());
         rows.into_iter()
@@ -137,6 +158,13 @@ impl Workspace {
     }
 
     pub(crate) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !hotkeys::is_enabled(cx) {
+            window.push_notification(
+                "The command palette is turned off. Enable it in Settings → Command palette.",
+                cx,
+            );
+            return;
+        }
         if self.palette_open {
             self.palette
                 .update(cx, |palette, cx| palette.focus(window, cx));

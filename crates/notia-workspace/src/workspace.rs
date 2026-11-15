@@ -28,6 +28,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::note_editor::{NoteEditor, NoteEditorEvent};
 
+#[path = "phone.rs"]
+mod phone;
+
+use phone::PhoneScreen;
+
 /// The strip of plugin buttons along the left edge.
 const RIBBON_WIDTH: Pixels = px(44.);
 /// Room for the macOS window buttons drawn over the title row.
@@ -152,6 +157,8 @@ pub struct Workspace {
     pub(crate) switcher_matches: Vec<crate::palette::SwitcherMatch>,
     layout_path: PathBuf,
     save_layout: Option<Task<()>>,
+    /// Which full-screen page a phone shows. A wide window ignores it.
+    phone: PhoneScreen,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -204,6 +211,7 @@ impl Workspace {
             switcher_matches: Vec::new(),
             layout_path,
             save_layout: None,
+            phone: PhoneScreen::Browse,
             _subscriptions: subscriptions,
         };
         workspace.sync_contributions(window, cx);
@@ -225,6 +233,9 @@ impl Workspace {
                 let focus_handle = workspace.focus_handle.clone();
                 window.defer(cx, move |window, cx| focus_handle.focus(window, cx));
             }
+        }
+        if gpui_kit::is_mobile() && workspace.active_tab.is_some() {
+            workspace.phone = PhoneScreen::Note;
         }
         workspace
     }
@@ -426,6 +437,9 @@ impl Workspace {
         self.recent.retain(|recent| recent != &path);
         self.recent.insert(0, path);
         self.recent.truncate(50);
+        if gpui_kit::is_mobile() {
+            self.phone = PhoneScreen::Note;
+        }
     }
 
     /// Opens what a link points at; a link to a missing note creates it.
@@ -636,6 +650,17 @@ impl Workspace {
     }
 
     pub(crate) fn toggle_sidebar(&mut self, placement: PanelPlacement, cx: &mut Context<Self>) {
+        if gpui_kit::is_mobile() {
+            self.phone = match (placement, self.phone) {
+                (PanelPlacement::Left, PhoneScreen::Browse) => PhoneScreen::Note,
+                (PanelPlacement::Left, _) => PhoneScreen::Browse,
+                (PanelPlacement::Right, PhoneScreen::Inspect) => PhoneScreen::Note,
+                (PanelPlacement::Right, _) => PhoneScreen::Inspect,
+                (PanelPlacement::Editor, _) => self.phone,
+            };
+            cx.notify();
+            return;
+        }
         let sidebar = self.sidebar_mut(placement);
         sidebar.open = !sidebar.open;
         self.schedule_layout_save(cx);
@@ -652,6 +677,13 @@ impl Workspace {
         sidebar.open = true;
         sidebar.chosen = Some(id.clone());
         sidebar.active = Some(id);
+        if gpui_kit::is_mobile() {
+            self.phone = match placement {
+                PanelPlacement::Left => PhoneScreen::Browse,
+                PanelPlacement::Right => PhoneScreen::Inspect,
+                PanelPlacement::Editor => self.phone,
+            };
+        }
         self.schedule_layout_save(cx);
         cx.notify();
     }
@@ -1139,6 +1171,16 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if gpui_kit::is_mobile() {
+            self.render_phone(window, cx).into_any_element()
+        } else {
+            self.render_desktop(window, cx).into_any_element()
+        }
+    }
+}
+
+impl Workspace {
+    fn render_desktop(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (background, foreground, font_family) = (
             theme.background,

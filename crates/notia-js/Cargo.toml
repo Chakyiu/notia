@@ -16,3 +16,7 @@ rquickjs = { version = "0.14", features = ["loader"] }
 serde.workspace = true
 serde_json.workspace = true
 smol = "2"
+
+# Prebuilt QuickJS bindings exist for desktop targets only. iOS generates them.
+[target.'cfg(target_os = "ios")'.dependencies]
+rquickjs = { version = "0.14", features = ["loader", "bindgen"] }

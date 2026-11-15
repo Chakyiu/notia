@@ -8,6 +8,7 @@ extern crate gpui_kit as gpui;
 mod attachments;
 mod note_editor;
 mod palette;
+mod palette_settings;
 mod reading;
 mod settings_dialog;
 mod workspace;
@@ -44,21 +45,7 @@ pub fn key_binding(
 
 /// Binds the workspace keys and actions. Call once at startup.
 pub fn init(cx: &mut App) {
-    let context = Some(WORKSPACE_CONTEXT);
-    let bindings = [
-        key_binding("secondary-p", OpenCommandPalette, context, cx),
-        key_binding("secondary-o", OpenQuickSwitcher, context, cx),
-        key_binding("secondary-,", OpenSettings, context, cx),
-        key_binding("secondary-n", NewNote, context, cx),
-        key_binding("secondary-w", CloseTab, context, cx),
-        key_binding("secondary-e", ToggleReadingView, context, cx),
-        key_binding("secondary-s", SaveNote, context, cx),
-        key_binding("ctrl-tab", NextTab, context, cx),
-        key_binding("ctrl-shift-tab", PreviousTab, context, cx),
-        key_binding("secondary-\\", ToggleLeftSidebar, context, cx),
-        key_binding("secondary-shift-\\", ToggleRightSidebar, context, cx),
-    ];
-    cx.bind_keys(bindings);
+    crate::palette::install(cx);
 
     // Handled at the application level so that the palette, which lives in
     // a dialog outside the workspace's element tree, can dispatch them too.
@@ -109,7 +96,11 @@ pub fn init(cx: &mut App) {
 }
 
 /// The options of a workspace window centered on the main display.
+/// A phone takes the whole screen, which the system already sized.
 pub fn window_options(cx: &App) -> WindowOptions {
+    if gpui_kit::is_mobile() {
+        return WindowOptions::default();
+    }
     let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),

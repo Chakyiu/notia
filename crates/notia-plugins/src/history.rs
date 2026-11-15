@@ -1,11 +1,16 @@
-//! Notes the user has opened, and back and forward through that trail.
+//! Saved versions of a note. Each save that changes the text is kept, and
+//! an older version can be restored.
 
-use std::collections::HashSet;
+use std::{
+    collections::HashMap,
+    fs, io,
+    path::{Path, PathBuf},
+};
 
-use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
+use chrono::{DateTime, Local, Utc};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, Sizable as _,
+    ActiveTheme as _, Icon, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     scroll::ScrollableElement as _,
@@ -14,13 +19,13 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 // A glob import would pull in GPUI's `test` macro and shadow `#[test]` below.
 use gpui_kit::{
-    App, AppContext, Context, Div, Entity, FontWeight, Global, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled,
-    Subscription, Window, div, px,
+    App, AppContext, Context, Entity, FontWeight, Global, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, Styled, Subscription, Window, div, px,
 };
 use notia_plugin::{
-    Command, Notia, OpenOptions, Panel, PanelPlacement, Plugin, PluginContext, PluginManifest,
-    VaultEvent, WorkspaceEvent, core::VaultPath, workspace,
+    Command, EditorChange, EditorSelection, EditorTransaction, Notia, Panel, PanelPlacement,
+    Plugin, PluginContext, PluginManifest, Setting, SettingsSection, SettingsTab, VaultEvent,
+    WorkspaceEvent, core::VaultPath, workspace,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,17 +33,17 @@ use crate::ui;
 
 const PLUGIN_ID: &str = "history";
 const PANEL_ID: &str = "history:history";
-/// Opened notes kept in the list, newest first.
-const MAX_VISITS: usize = 100;
-/// Notes remembered for back and forward during this session.
-const MAX_STACK: usize = 100;
+/// Versions kept for one note when the vault has no saved preference.
+const DEFAULT_KEEP: u32 = 80;
+const MIN_KEEP: u32 = 1;
+const MAX_KEEP: u32 = 500;
 
 pub struct HistoryPlugin;
 
 impl Plugin for HistoryPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest::new(PLUGIN_ID, "History").with_description(
-            "Lists notes you have opened, newest first, and moves back and forward through them.",
+            "Keeps each saved version of a note, and restores any earlier version.",
         )
     }
 
@@ -54,10 +59,10 @@ impl Plugin for HistoryPlugin {
                 "history",
                 "History",
                 Icon::new(Lucide::Clock),
-                PanelPlacement::Left,
+                PanelPlacement::Right,
                 |_, cx| cx.new(HistoryPanel::new),
             )
-            .with_order(20),
+            .with_order(40),
         );
         ctx.add_command(
             Command::new("show", "Show history", |window, cx| {
@@ -66,21 +71,84 @@ impl Plugin for HistoryPlugin {
             .with_icon(Icon::new(Lucide::Clock)),
         );
         ctx.add_command(
-            Command::new("back", "Go back", go_back)
-                .with_icon(Icon::new(Lucide::ArrowLeft))
-                .with_keybinding("secondary-alt-left")
-                .available_when(can_go_back),
+            Command::new(
+                "compare-previous",
+                "Compare previous version",
+                |window, cx| compare_previous(window, cx),
+            )
+            .with_icon(Icon::new(Lucide::GitCompare))
+            .available_when(has_previous),
         );
         ctx.add_command(
-            Command::new("forward", "Go forward", go_forward)
-                .with_icon(Icon::new(Lucide::ArrowRight))
-                .with_keybinding("secondary-alt-right")
-                .available_when(can_go_forward),
+            Command::new(
+                "restore-previous",
+                "Restore previous version",
+                |window, cx| {
+                    restore_previous(window, cx);
+                },
+            )
+            .with_icon(Icon::new(Lucide::Undo2))
+            .available_when(has_previous),
         );
         ctx.add_command(
-            Command::new("clear", "Clear history", |_, cx| clear_history(cx))
-                .available_when(can_clear),
+            Command::new("clear", "Clear history for this note", |_, cx| {
+                clear_active(cx)
+            })
+            .available_when(has_previous),
         );
+        ctx.add_settings_tab(
+            SettingsTab::new("options", settings_page).with_icon(Icon::new(Lucide::Clock)),
+        );
+    }
+}
+
+fn settings_page(_: &mut App) -> Vec<SettingsSection> {
+    vec![SettingsSection::new().setting(
+        Setting::number(
+            "Versions to keep",
+            (MIN_KEEP as f64)..=(MAX_KEEP as f64),
+            1.,
+            |cx| HistorySettings::load(cx).keep as f64,
+            |value, cx| HistorySettings::set_keep(value as u32, cx),
+        )
+        .with_description(
+            "How many saved versions each note keeps. Older ones are dropped. The newest stays.",
+        ),
+    )]
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct HistorySettings {
+    keep: u32,
+}
+
+impl Default for HistorySettings {
+    fn default() -> Self {
+        Self { keep: DEFAULT_KEEP }
+    }
+}
+
+impl HistorySettings {
+    fn load(cx: &App) -> Self {
+        let mut settings: Self = Notia::load_plugin_data(PLUGIN_ID, cx);
+        settings.keep = settings.keep.clamp(MIN_KEEP, MAX_KEEP);
+        settings
+    }
+
+    fn limit(cx: &App) -> usize {
+        Self::load(cx).keep as usize
+    }
+
+    fn set_keep(keep: u32, cx: &mut App) {
+        let settings = Self {
+            keep: keep.clamp(MIN_KEEP, MAX_KEEP),
+        };
+        Notia::save_plugin_data(PLUGIN_ID, &settings, cx);
+        if let Some(model) = HistoryHost::model(cx) {
+            let limit = settings.keep as usize;
+            model.update(cx, |model, cx| model.enforce_limit(limit, cx));
+        }
     }
 }
 
@@ -96,432 +164,642 @@ impl HistoryHost {
     }
 }
 
-fn go_back(window: &mut Window, cx: &mut App) {
+fn compare_previous(window: &mut Window, cx: &mut App) {
     let Some(model) = HistoryHost::model(cx) else {
         return;
     };
-    let Some(path) = model.update(cx, |model, cx| model.go_back(cx)) else {
+    let Some(path) = model.read(cx).active.clone() else {
         return;
     };
-    workspace::open_note(path, OpenOptions::new(), window, cx);
+    let Some(revision) = model.read(cx).previous_revision(&path) else {
+        return;
+    };
+    let (at, text) = (revision.at, revision.text.clone());
+    model.update(cx, |model, cx| model.open_compare(path, at, text, cx));
+    open_compare_popup(window, cx);
 }
 
-fn go_forward(window: &mut Window, cx: &mut App) {
+fn open_compare_popup(window: &mut Window, cx: &mut App) {
+    window.defer(cx, |window, cx| {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let view = cx.new(ComparePanel::new);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let height = (window.viewport_size().height - px(140.)).min(px(560.));
+            dialog
+                .title("Compare")
+                .w(px(720.))
+                .child(div().h(height).overflow_hidden().child(view.clone()))
+        });
+    });
+}
+
+fn restore_previous(window: &mut Window, cx: &mut App) {
     let Some(model) = HistoryHost::model(cx) else {
         return;
     };
-    let Some(path) = model.update(cx, |model, cx| model.go_forward(cx)) else {
+    let Some((path, text)) = model.read(cx).previous_text() else {
         return;
     };
-    workspace::open_note(path, OpenOptions::new(), window, cx);
+    restore(&path, text, window, cx);
 }
 
-fn clear_history(cx: &mut App) {
+fn clear_active(cx: &mut App) {
     if let Some(model) = HistoryHost::model(cx) {
-        model.update(cx, |model, cx| model.clear(cx));
+        model.update(cx, |model, cx| model.clear_active(cx));
     }
 }
 
-fn can_go_back(cx: &App) -> bool {
-    HistoryHost::model(cx).is_some_and(|model| model.read(cx).history.can_go_back())
+fn has_previous(cx: &App) -> bool {
+    HistoryHost::model(cx).is_some_and(|model| model.read(cx).previous_text().is_some())
 }
 
-fn can_go_forward(cx: &App) -> bool {
-    HistoryHost::model(cx).is_some_and(|model| model.read(cx).history.can_go_forward())
-}
-
-fn can_clear(cx: &App) -> bool {
-    HistoryHost::model(cx).is_some_and(|model| model.read(cx).history.can_clear())
+/// Puts `text` back into the open note. The editor saves it, and that save
+/// is recorded as a new version, so the one it replaced stays in the list.
+fn restore(path: &VaultPath, text: String, window: &mut Window, cx: &mut App) {
+    let Some(editor) = workspace::active_editor(cx).filter(|editor| &editor.path == path) else {
+        window.push_notification("Open the note to restore a version.", cx);
+        return;
+    };
+    if editor.text.as_ref() == text {
+        return;
+    }
+    let id = editor.id;
+    let replace = EditorTransaction {
+        changes: vec![EditorChange {
+            range: 0..editor.text.len(),
+            text: text.clone(),
+        }],
+        selection: Some(EditorSelection::cursor(0)),
+    };
+    if let Err(error) = workspace::edit(id, replace, cx) {
+        window.push_notification(format!("Could not restore this version: {error}"), cx);
+        return;
+    }
+    if let Some(model) = HistoryHost::model(cx) {
+        model.update(cx, |model, cx| model.record(path, &text, cx));
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct Visit {
-    path: VaultPath,
-    opened_at: i64,
+struct Revision {
+    at: i64,
+    text: String,
 }
 
-#[derive(Default, Serialize, Deserialize)]
-struct SavedHistory {
-    visits: Vec<Visit>,
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct NoteLog {
+    revisions: Vec<Revision>,
 }
 
-/// The opened-note list and the session's back and forward stacks.
-#[derive(Default)]
-struct History {
-    visits: Vec<Visit>,
-    back: Vec<VaultPath>,
-    forward: Vec<VaultPath>,
-    current: Option<VaultPath>,
-}
-
-impl History {
-    fn from_saved(saved: SavedHistory) -> Self {
-        let mut history = Self {
-            visits: saved.visits,
-            ..Self::default()
-        };
-        history.dedup();
-        history.visits.truncate(MAX_VISITS);
-        history
-    }
-
-    fn can_go_back(&self) -> bool {
-        self.back
-            .iter()
-            .any(|path| self.current.as_ref() != Some(path))
-    }
-
-    fn can_go_forward(&self) -> bool {
-        self.forward
-            .iter()
-            .any(|path| self.current.as_ref() != Some(path))
-    }
-
-    fn can_clear(&self) -> bool {
-        self.visits.len() > 1 || !self.back.is_empty() || !self.forward.is_empty()
-    }
-
-    /// Records `path` as the note the user just opened.
-    ///
-    /// Opening the note that is already current only refreshes its time, so
-    /// back and forward can set `current` before the workspace reports it.
-    fn note_opened(&mut self, path: VaultPath, at: i64) -> bool {
-        let moved = if self.current.as_ref() == Some(&path) {
-            false
-        } else {
-            if let Some(current) = self.current.clone() {
-                self.push_back(current);
-            }
-            self.forward.clear();
-            self.current = Some(path.clone());
-            true
-        };
-        self.touch(path, at) || moved
-    }
-
-    fn note_closed(&mut self) -> bool {
-        let Some(current) = self.current.take() else {
-            return false;
-        };
-        self.push_back(current);
-        self.forward.clear();
-        true
-    }
-
-    fn go_back(&mut self, at: i64) -> Option<VaultPath> {
-        let path = pop_different(&mut self.back, self.current.as_ref())?;
-        if let Some(current) = self.current.clone() {
-            self.push_forward(current);
-        }
-        self.current = Some(path.clone());
-        self.touch(path.clone(), at);
-        Some(path)
-    }
-
-    fn go_forward(&mut self, at: i64) -> Option<VaultPath> {
-        let path = pop_different(&mut self.forward, self.current.as_ref())?;
-        if let Some(current) = self.current.clone() {
-            self.push_back(current);
-        }
-        self.current = Some(path.clone());
-        self.touch(path.clone(), at);
-        Some(path)
-    }
-
-    fn clear(&mut self, at: i64) -> bool {
-        if !self.can_clear() {
-            return false;
-        }
-        let current = self.current.clone();
-        self.back.clear();
-        self.forward.clear();
-        self.visits.clear();
-        if let Some(current) = current {
-            self.touch(current, at);
-        }
-        true
-    }
-
-    fn rebase(&mut self, from: &VaultPath, to: &VaultPath) -> bool {
-        let mut changed = false;
-        for visit in &mut self.visits {
-            changed |= map_path(&mut visit.path, from, to);
-        }
-        for path in &mut self.back {
-            changed |= map_path(path, from, to);
-        }
-        for path in &mut self.forward {
-            changed |= map_path(path, from, to);
-        }
-        if let Some(current) = &mut self.current {
-            changed |= map_path(current, from, to);
-        }
-        if changed {
-            self.dedup();
-        }
-        changed
-    }
-
-    fn drop_under(&mut self, root: &VaultPath) -> bool {
-        let visits = self.visits.len();
-        self.visits.retain(|visit| !visit.path.starts_with(root));
-        let back = self.back.len();
-        self.back.retain(|path| !path.starts_with(root));
-        let forward = self.forward.len();
-        self.forward.retain(|path| !path.starts_with(root));
-        let clear_current = self
-            .current
-            .as_ref()
-            .is_some_and(|path| path.starts_with(root));
-        if clear_current {
-            self.current = None;
-        }
-        visits != self.visits.len()
-            || back != self.back.len()
-            || forward != self.forward.len()
-            || clear_current
-    }
-
-    fn prune(&mut self, exists: impl Fn(&VaultPath) -> bool) -> bool {
-        let visits = self.visits.len();
-        self.visits.retain(|visit| exists(&visit.path));
-        let back = self.back.len();
-        self.back.retain(|path| exists(path));
-        let forward = self.forward.len();
-        self.forward.retain(|path| exists(path));
-        let clear_current = self.current.as_ref().is_some_and(|path| !exists(path));
-        if clear_current {
-            self.current = None;
-        }
-        visits != self.visits.len()
-            || back != self.back.len()
-            || forward != self.forward.len()
-            || clear_current
-    }
-
-    fn push_back(&mut self, path: VaultPath) {
-        push_capped(&mut self.back, path);
-    }
-
-    fn push_forward(&mut self, path: VaultPath) {
-        push_capped(&mut self.forward, path);
-    }
-
-    fn touch(&mut self, path: VaultPath, at: i64) -> bool {
+impl NoteLog {
+    /// Appends `text` when it differs from the latest version.
+    fn record(&mut self, text: &str, at: i64, limit: usize) -> bool {
         if self
-            .visits
-            .first()
-            .is_some_and(|visit| visit.path == path && visit.opened_at == at)
+            .revisions
+            .last()
+            .is_some_and(|revision| revision.text == text)
         {
             return false;
         }
-        self.visits.retain(|visit| visit.path != path);
-        self.visits.insert(
-            0,
-            Visit {
-                path,
-                opened_at: at,
-            },
-        );
-        self.visits.truncate(MAX_VISITS);
+        self.revisions.push(Revision {
+            at,
+            text: text.to_string(),
+        });
+        trim(self, limit);
         true
     }
 
-    fn dedup(&mut self) {
-        let mut seen = HashSet::new();
-        self.visits.retain(|visit| seen.insert(visit.path.clone()));
+    fn previous(&self) -> Option<&Revision> {
+        let len = self.revisions.len();
+        (len >= 2).then(|| &self.revisions[len - 2])
     }
 }
 
-/// Pops the newest entry that is not the note already open.
-fn pop_different(stack: &mut Vec<VaultPath>, current: Option<&VaultPath>) -> Option<VaultPath> {
-    while let Some(path) = stack.pop() {
-        if current != Some(&path) {
-            return Some(path);
-        }
+/// Drops the oldest versions past `limit`. Reports whether any were dropped.
+fn trim(log: &mut NoteLog, limit: usize) -> bool {
+    let extra = log.revisions.len().saturating_sub(limit.max(1));
+    if extra == 0 {
+        return false;
     }
-    None
+    log.revisions.drain(0..extra);
+    true
 }
 
-fn push_capped(stack: &mut Vec<VaultPath>, path: VaultPath) {
-    if stack.last() == Some(&path) {
-        return;
-    }
-    stack.push(path);
-    let extra = stack.len().saturating_sub(MAX_STACK);
-    if extra > 0 {
-        stack.drain(0..extra);
-    }
-}
-
-fn map_path(path: &mut VaultPath, from: &VaultPath, to: &VaultPath) -> bool {
-    match path.rebase(from, to) {
-        Some(moved) if moved != *path => {
-            *path = moved;
-            true
-        }
-        _ => false,
-    }
-}
-
-fn unix_now() -> i64 {
-    Utc::now().timestamp()
-}
-
-fn local_date(opened_at: i64) -> Option<NaiveDate> {
-    DateTime::<Utc>::from_timestamp(opened_at, 0)
-        .map(|time| time.with_timezone(&Local).date_naive())
-}
-
-fn day_label(opened_at: i64, today: NaiveDate) -> String {
-    let Some(date) = local_date(opened_at) else {
-        return "Earlier".to_string();
-    };
-    if date == today {
-        "Today".to_string()
-    } else if today.pred_opt() == Some(date) {
-        "Yesterday".to_string()
-    } else if date.year() == today.year() {
-        format!("{} {}", date.format("%b"), date.day())
+/// How a version differs from the one before it.
+fn change_label(before: &str, after: &str) -> String {
+    let delta = after.chars().count() as i64 - before.chars().count() as i64;
+    if delta > 0 {
+        format!("+{delta}")
+    } else if delta < 0 {
+        delta.to_string()
     } else {
-        format!("{} {}, {}", date.format("%b"), date.day(), date.year())
+        "edited".to_string()
     }
 }
 
-fn format_clock(opened_at: i64) -> String {
-    DateTime::<Utc>::from_timestamp(opened_at, 0)
-        .map(|time| time.with_timezone(&Local).format("%H:%M").to_string())
-        .unwrap_or_default()
+fn snippet(text: &str) -> String {
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("Empty");
+    let line = line.trim();
+    let count = line.chars().count();
+    if count > 72 {
+        format!("{}…", line.chars().take(72).collect::<String>())
+    } else if line.is_empty() {
+        "Empty".to_string()
+    } else {
+        line.to_string()
+    }
 }
 
-/// Groups `visits` by day, newest first, in the order they already have.
-fn group_visits(visits: &[Visit], today: NaiveDate) -> Vec<(String, Vec<usize>)> {
-    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
-    for (ix, visit) in visits.iter().enumerate() {
-        let label = day_label(visit.opened_at, today);
-        if let Some((last, indexes)) = groups.last_mut()
-            && *last == label
-        {
-            indexes.push(ix);
-        } else {
-            groups.push((label, vec![ix]));
-        }
-    }
-    groups
+fn log_file(dir: &Path, note: &VaultPath) -> PathBuf {
+    dir.join(format!("{note}.json"))
+}
+
+#[derive(Clone)]
+struct CompareSelection {
+    path: VaultPath,
+    at: i64,
+    text: String,
 }
 
 struct HistoryModel {
-    history: History,
+    dir: PathBuf,
+    logs: HashMap<VaultPath, NoteLog>,
+    active: Option<VaultPath>,
+    compare: Option<CompareSelection>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl HistoryModel {
     fn new(cx: &mut Context<Self>) -> Self {
-        let saved = Notia::load_plugin_data(PLUGIN_ID, cx);
-        let mut history = History::from_saved(saved);
-        let opened = Notia::workspace(cx)
+        let dir = Notia::vault(cx)
             .read(cx)
-            .active_path()
-            .cloned()
-            .is_some_and(|path| history.note_opened(path, unix_now()));
+            .vault()
+            .config_dir()
+            .join("history");
         let subscriptions = vec![
             cx.subscribe(&Notia::workspace(cx), |this, workspace, event, cx| {
                 if matches!(event, WorkspaceEvent::ActiveNoteChanged) {
                     let active = workspace.read(cx).active_path().cloned();
-                    this.on_active(active, cx);
+                    this.follow(active, cx);
                 }
             }),
             cx.subscribe(&Notia::vault(cx), |this, _, event, cx| {
                 this.on_vault(event, cx);
             }),
         ];
-        let model = Self {
-            history,
+        let mut model = Self {
+            dir,
+            logs: HashMap::new(),
+            active: None,
+            compare: None,
             _subscriptions: subscriptions,
         };
-        if opened {
-            model.save(cx);
+        if let Some(path) = Notia::workspace(cx).read(cx).active_path().cloned() {
+            model.follow(Some(path), cx);
         }
+        let limit = HistorySettings::limit(cx);
+        model.enforce_limit(limit, cx);
         model
     }
 
-    fn on_active(&mut self, active: Option<VaultPath>, cx: &mut Context<Self>) {
-        let at = unix_now();
-        let changed = match active {
-            Some(path) => self.history.note_opened(path, at),
-            None => self.history.note_closed(),
-        };
-        if changed {
-            self.save(cx);
+    fn follow(&mut self, active: Option<VaultPath>, cx: &mut Context<Self>) {
+        if self.compare.as_ref().map(|item| &item.path) != active.as_ref() {
+            self.compare = None;
         }
-        // The open note changed even when the list did not, and the panel
-        // highlights whichever note is open.
+        self.active = active.clone();
+        if let Some(path) = active
+            && let Some(text) = note_text(&path, cx)
+        {
+            self.record(&path, &text, cx);
+        }
         cx.notify();
     }
 
     fn on_vault(&mut self, event: &VaultEvent, cx: &mut Context<Self>) {
-        let changed = match event {
-            VaultEvent::Renamed { from, to } => self.history.rebase(from, to),
-            VaultEvent::Trashed(path) => self.history.drop_under(path),
-            VaultEvent::TreeChanged => {
-                let model = Notia::vault(cx);
-                let vault = model.read(cx);
-                if vault.is_loaded() {
-                    let vault = vault.vault().clone();
-                    self.history.prune(|path| vault.exists(path))
-                } else {
-                    false
+        match event {
+            VaultEvent::NotesChanged(paths) => {
+                let mut changed = false;
+                for path in paths {
+                    if !self.logs.contains_key(path) && self.active.as_ref() != Some(path) {
+                        continue;
+                    }
+                    let Some(text) = indexed_text(path, cx) else {
+                        continue;
+                    };
+                    changed |= self.record(path, &text, cx);
+                }
+                if changed {
+                    cx.notify();
                 }
             }
-            VaultEvent::NotesChanged(_) => false,
-        };
-        if changed {
-            self.save(cx);
-            cx.notify();
+            VaultEvent::Renamed { from, to } => {
+                self.relocate(from, to);
+                cx.notify();
+            }
+            VaultEvent::Trashed(path) => {
+                self.forget(path);
+                cx.notify();
+            }
+            VaultEvent::TreeChanged => {}
         }
     }
 
-    fn go_back(&mut self, cx: &mut Context<Self>) -> Option<VaultPath> {
-        let path = self.history.go_back(unix_now())?;
-        self.save(cx);
+    fn record(&mut self, path: &VaultPath, text: &str, cx: &mut Context<Self>) -> bool {
+        if !self.logs.contains_key(path) {
+            let loaded = self.read(path);
+            self.logs.insert(path.clone(), loaded);
+        }
+        let keep = {
+            let limit = HistorySettings::limit(cx);
+            let log = self.logs.get_mut(path).unwrap();
+            if !log.record(text, unix_now(), limit) {
+                return false;
+            }
+            log.revisions.len() >= 2
+        };
+        // A single baseline is the note as it is. Keep it in memory, and
+        // write the file once a later save has something to restore.
+        if keep {
+            self.write(path);
+        }
         cx.notify();
-        Some(path)
+        true
     }
 
-    fn go_forward(&mut self, cx: &mut Context<Self>) -> Option<VaultPath> {
-        let path = self.history.go_forward(unix_now())?;
-        self.save(cx);
-        cx.notify();
-        Some(path)
+    fn previous_revision(&self, path: &VaultPath) -> Option<&Revision> {
+        self.logs.get(path)?.previous()
     }
 
-    fn clear(&mut self, cx: &mut Context<Self>) {
-        if self.history.clear(unix_now()) {
-            self.save(cx);
-            cx.notify();
+    fn open_compare(&mut self, path: VaultPath, at: i64, text: String, cx: &mut Context<Self>) {
+        self.compare = Some(CompareSelection { path, at, text });
+        cx.notify();
+    }
+
+    fn previous_text(&self) -> Option<(VaultPath, String)> {
+        let path = self.active.clone()?;
+        let revision = self.logs.get(&path)?.previous()?;
+        Some((path, revision.text.clone()))
+    }
+
+    fn revisions(&self, path: &VaultPath) -> Vec<Revision> {
+        self.logs
+            .get(path)
+            .map(|log| log.revisions.clone())
+            .unwrap_or_default()
+    }
+
+    fn clear_active(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.active.clone() else {
+            return;
+        };
+        self.forget(&path);
+        if let Some(text) = note_text(&path, cx) {
+            let limit = HistorySettings::limit(cx);
+            self.logs
+                .entry(path)
+                .or_default()
+                .record(&text, unix_now(), limit);
+        }
+        cx.notify();
+    }
+
+    fn read(&self, path: &VaultPath) -> NoteLog {
+        let file = log_file(&self.dir, path);
+        match fs::read_to_string(&file) {
+            Ok(json) => serde_json::from_str(&json).unwrap_or_else(|error| {
+                log::warn!("ignoring the invalid history {}: {error}", file.display());
+                NoteLog::default()
+            }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => NoteLog::default(),
+            Err(error) => {
+                log::warn!("could not read {}: {error}", file.display());
+                NoteLog::default()
+            }
         }
     }
 
-    fn save(&self, cx: &App) {
-        let saved = SavedHistory {
-            visits: self.history.visits.clone(),
+    /// Drops versions past `limit` from open notes and from every saved log.
+    fn enforce_limit(&mut self, limit: usize, cx: &mut Context<Self>) {
+        let limit = limit.max(1);
+        for log in self.logs.values_mut() {
+            trim(log, limit);
+        }
+        let paths: Vec<VaultPath> = self.logs.keys().cloned().collect();
+        for path in &paths {
+            let len = self
+                .logs
+                .get(path)
+                .map(|log| log.revisions.len())
+                .unwrap_or(0);
+            if len >= 2 {
+                self.write(path);
+            } else {
+                remove_log_file(&self.dir, path);
+            }
+        }
+        trim_saved(&self.dir, limit);
+        cx.notify();
+    }
+
+    fn write(&self, path: &VaultPath) {
+        let Some(log) = self.logs.get(path) else {
+            return;
         };
-        Notia::save_plugin_data(PLUGIN_ID, &saved, cx);
+        let file = log_file(&self.dir, path);
+        let saved = (|| -> io::Result<()> {
+            if let Some(parent) = file.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let json = serde_json::to_string_pretty(log).map_err(io::Error::other)?;
+            fs::write(&file, json)?;
+            Ok(())
+        })();
+        if let Err(error) = saved {
+            log::error!("could not save {}: {error}", file.display());
+        }
+    }
+
+    fn relocate(&mut self, from: &VaultPath, to: &VaultPath) {
+        let mut moved = Vec::new();
+        for path in self.logs.keys() {
+            if let Some(next) = path.rebase(from, to) {
+                moved.push((path.clone(), next));
+            }
+        }
+        for (path, next) in moved {
+            if let Some(log) = self.logs.remove(&path) {
+                self.logs.insert(next, log);
+            }
+        }
+        move_entry(&log_file(&self.dir, from), &log_file(&self.dir, to));
+        move_entry(&self.dir.join(from.as_str()), &self.dir.join(to.as_str()));
+    }
+
+    fn forget(&mut self, path: &VaultPath) {
+        self.logs.retain(|note, _| !note.starts_with(path));
+        let file = log_file(&self.dir, path);
+        if file.is_file() {
+            if let Err(error) = fs::remove_file(&file) {
+                log::warn!("could not remove {}: {error}", file.display());
+            }
+        }
+        let folder = self.dir.join(path.as_str());
+        if folder.is_dir()
+            && let Err(error) = fs::remove_dir_all(&folder)
+        {
+            log::warn!("could not remove {}: {error}", folder.display());
+        }
     }
 }
 
+fn note_text(path: &VaultPath, cx: &App) -> Option<String> {
+    if let Some(editor) = workspace::active_editor(cx)
+        && &editor.path == path
+    {
+        return Some(editor.text.to_string());
+    }
+    indexed_text(path, cx)
+}
+
+fn indexed_text(path: &VaultPath, cx: &App) -> Option<String> {
+    Notia::vault(cx)
+        .read(cx)
+        .index()
+        .get(path)
+        .map(|note| note.text.to_string())
+        .or_else(|| Notia::vault(cx).read(cx).read_note(path).ok())
+}
+
+fn remove_log_file(dir: &Path, note: &VaultPath) {
+    let file = log_file(dir, note);
+    if file.is_file()
+        && let Err(error) = fs::remove_file(&file)
+    {
+        log::warn!("could not remove {}: {error}", file.display());
+    }
+}
+
+/// Trims every saved log under `dir` to `limit` versions.
+fn trim_saved(dir: &Path, limit: usize) {
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(folder) = pending.pop() {
+        let entries = match fs::read_dir(&folder) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(json) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(mut log) = serde_json::from_str::<NoteLog>(&json) else {
+                continue;
+            };
+            if !trim(&mut log, limit) {
+                continue;
+            }
+            if log.revisions.len() < 2 {
+                if let Err(error) = fs::remove_file(&path) {
+                    log::warn!("could not remove {}: {error}", path.display());
+                }
+                continue;
+            }
+            let saved = serde_json::to_string_pretty(&log)
+                .map_err(io::Error::other)
+                .and_then(|json| fs::write(&path, json));
+            if let Err(error) = saved {
+                log::warn!("could not save {}: {error}", path.display());
+            }
+        }
+    }
+}
+
+fn move_entry(from: &Path, to: &Path) {
+    if !from.exists() {
+        return;
+    }
+    if let Some(parent) = to.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        log::warn!("could not create {}: {error}", parent.display());
+        return;
+    }
+    if let Err(error) = fs::rename(from, to) {
+        log::warn!(
+            "could not move {} to {}: {error}",
+            from.display(),
+            to.display()
+        );
+    }
+}
+
+fn unix_now() -> i64 {
+    Utc::now().timestamp_millis()
+}
+
+/// `YYYY-MM-DD HH:mm:ss.xxx` in local time. Values saved before milliseconds
+/// were recorded are whole seconds and show `.000`.
+fn format_when(at: i64) -> String {
+    let millis = if at.abs() < 100_000_000_000 {
+        at.saturating_mul(1000)
+    } else {
+        at
+    };
+    let Some(time) = DateTime::<Utc>::from_timestamp_millis(millis) else {
+        return String::new();
+    };
+    time.with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DiffLine {
+    Same(String),
+    Removed(String),
+    Added(String),
+}
+
+/// Line differences from an older version to the current text.
+fn diff_lines(before: &str, after: &str) -> Vec<DiffLine> {
+    let old = split_lines(before);
+    let new = split_lines(after);
+    if old.len().saturating_mul(new.len()) > 800 * 800 {
+        let mut lines = Vec::new();
+        lines.extend(
+            old.into_iter()
+                .map(|line| DiffLine::Removed(line.to_string())),
+        );
+        lines.extend(
+            new.into_iter()
+                .map(|line| DiffLine::Added(line.to_string())),
+        );
+        return lines;
+    }
+    let (rows, cols) = (old.len(), new.len());
+    let mut scores = vec![vec![0u32; cols + 1]; rows + 1];
+    for row in (0..rows).rev() {
+        for col in (0..cols).rev() {
+            scores[row][col] = if old[row] == new[col] {
+                scores[row + 1][col + 1] + 1
+            } else {
+                scores[row + 1][col].max(scores[row][col + 1])
+            };
+        }
+    }
+    let mut lines = Vec::new();
+    let (mut row, mut col) = (0, 0);
+    while row < rows && col < cols {
+        if old[row] == new[col] {
+            lines.push(DiffLine::Same(old[row].to_string()));
+            row += 1;
+            col += 1;
+        } else if scores[row + 1][col] >= scores[row][col + 1] {
+            lines.push(DiffLine::Removed(old[row].to_string()));
+            row += 1;
+        } else {
+            lines.push(DiffLine::Added(new[col].to_string()));
+            col += 1;
+        }
+    }
+    lines.extend(
+        old[row..]
+            .iter()
+            .map(|line| DiffLine::Removed(line.to_string())),
+    );
+    lines.extend(
+        new[col..]
+            .iter()
+            .map(|line| DiffLine::Added(line.to_string())),
+    );
+    lines
+}
+
+fn split_lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        text.lines().collect()
+    }
+}
+
+/// One row of the compare view, numbered like a code diff.
+struct CodeLine {
+    /// Line number in the older version. Empty when the line was added.
+    old: Option<u32>,
+    /// Line number in the current note. Empty when the line was removed.
+    new: Option<u32>,
+    /// `"-"` removed, `"+"` added, or empty when the line is unchanged.
+    sign: &'static str,
+    text: String,
+}
+
+fn code_lines(diff: &[DiffLine]) -> Vec<CodeLine> {
+    let mut old_no = 1u32;
+    let mut new_no = 1u32;
+    diff.iter()
+        .map(|line| match line {
+            DiffLine::Same(text) => {
+                let row = CodeLine {
+                    old: Some(old_no),
+                    new: Some(new_no),
+                    sign: "",
+                    text: text.clone(),
+                };
+                old_no += 1;
+                new_no += 1;
+                row
+            }
+            DiffLine::Removed(text) => {
+                let row = CodeLine {
+                    old: Some(old_no),
+                    new: None,
+                    sign: "-",
+                    text: text.clone(),
+                };
+                old_no += 1;
+                row
+            }
+            DiffLine::Added(text) => {
+                let row = CodeLine {
+                    old: None,
+                    new: Some(new_no),
+                    sign: "+",
+                    text: text.clone(),
+                };
+                new_no += 1;
+                row
+            }
+        })
+        .collect()
+}
+
+fn line_no(number: Option<u32>) -> String {
+    number.map(|number| number.to_string()).unwrap_or_default()
+}
+
 struct HistoryPanel {
-    _subscriptions: Vec<Subscription>,
+    _subscription: Option<Subscription>,
 }
 
 impl HistoryPanel {
     fn new(cx: &mut Context<Self>) -> Self {
-        let mut subscriptions = Vec::new();
-        if let Some(model) = HistoryHost::model(cx) {
-            subscriptions.push(cx.observe(&model, |_, _, cx| cx.notify()));
-        }
+        let subscription =
+            HistoryHost::model(cx).map(|model| cx.observe(&model, |_, _, cx| cx.notify()));
         Self {
-            _subscriptions: subscriptions,
+            _subscription: subscription,
         }
     }
 }
@@ -533,282 +811,299 @@ impl Render for HistoryPanel {
                 .size_full()
                 .child(ui::empty_message("History is unavailable.", cx));
         };
-        let vault = Notia::vault(cx).read(cx).vault().clone();
-        let (visits, can_back, can_forward, can_clear) = {
-            let history = &model.read(cx).history;
-            let visits = history
-                .visits
-                .iter()
-                .filter(|visit| vault.exists(&visit.path))
-                .cloned()
-                .collect::<Vec<_>>();
-            (
-                visits,
-                history.can_go_back(),
-                history.can_go_forward(),
-                history.can_clear(),
-            )
-        };
         let active = Notia::workspace(cx).read(cx).active_path().cloned();
-        let today = Local::now().date_naive();
-        let groups = group_visits(&visits, today);
+        let revisions = active
+            .as_ref()
+            .map(|path| model.read(cx).revisions(path))
+            .unwrap_or_default();
+        let title = active
+            .as_ref()
+            .map(|path| path.file_stem().to_string())
+            .unwrap_or_else(|| "History".to_string());
+        let muted = cx.theme().muted_foreground;
 
-        let toolbar = h_flex()
-            .px_2()
-            .pt_2()
-            .gap_1()
-            .items_center()
-            .child(
-                Button::new("history-back")
-                    .icon(Icon::new(Lucide::ArrowLeft))
-                    .ghost()
-                    .small()
-                    .tooltip("Go back")
-                    .disabled(!can_back)
-                    .on_click(|_, window, cx| go_back(window, cx)),
+        let body = if active.is_none() {
+            ui::empty_message("No note is open.", cx).into_any_element()
+        } else if revisions.len() < 2 {
+            ui::empty_message(
+                "Saved edits appear here. Any earlier version can be restored.",
+                cx,
             )
-            .child(
-                Button::new("history-forward")
-                    .icon(Icon::new(Lucide::ArrowRight))
-                    .ghost()
-                    .small()
-                    .tooltip("Go forward")
-                    .disabled(!can_forward)
-                    .on_click(|_, window, cx| go_forward(window, cx)),
-            )
-            .child(div().flex_1())
-            .when(can_clear, |bar| {
-                bar.child(
-                    Button::new("history-clear")
-                        .icon(Icon::new(Lucide::Trash))
-                        .ghost()
-                        .small()
-                        .tooltip("Clear history")
-                        .on_click(|_, _, cx| clear_history(cx)),
-                )
-            });
-
-        let list = if visits.is_empty() {
-            ui::empty_message("Notes you open show up here.", cx).into_any_element()
+            .into_any_element()
         } else {
+            let path = active.clone().unwrap();
             v_flex()
-                .children(groups.iter().map(|(label, indexes)| {
-                    v_flex()
-                        .child(ui::section_header(label.clone(), None, cx))
-                        .children(
-                            indexes
-                                .iter()
-                                .map(|ix| visit_row(&visits[*ix], active.as_ref(), cx)),
+                .children(revisions.iter().enumerate().rev().map(|(index, revision)| {
+                    let latest = index + 1 == revisions.len();
+                    let label = if latest {
+                        "Current".to_string()
+                    } else if index == 0 {
+                        "Original".to_string()
+                    } else {
+                        change_label(&revisions[index - 1].text, &revision.text)
+                    };
+                    let version_path = path.clone();
+                    let version_text = revision.text.clone();
+                    let version_at = revision.at;
+                    ui::row(SharedString::from(format!("history-{index}")), cx).child(
+                        h_flex().w_full().items_center().gap_1().child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_0p5()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .when(latest, |row| row.font_weight(FontWeight::MEDIUM))
+                                        .child(format_when(revision.at)),
+                                )
+                                .child(
+                                    div().truncate().text_xs().text_color(muted).child(label),
+                                ),
                         )
+                        .when(!latest, |row| {
+                            let compare_path = version_path.clone();
+                            let compare_text = version_text.clone();
+                            row.child(
+                                Button::new(SharedString::from(format!(
+                                    "history-compare-{index}"
+                                )))
+                                .icon(Icon::new(Lucide::GitCompare))
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Compare")
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    let path = compare_path.clone();
+                                    let text = compare_text.clone();
+                                    if let Some(model) = HistoryHost::model(cx) {
+                                        model.update(cx, |model, cx| {
+                                            model.open_compare(path, version_at, text, cx);
+                                        });
+                                    }
+                                    open_compare_popup(window, cx);
+                                }),
+                            )
+                        }),
+                    )
                 }))
                 .into_any_element()
         };
 
-        v_flex().size_full().child(toolbar).child(
+        v_flex()
+            .size_full()
+            .child(ui::section_header(
+                title,
+                (revisions.len() >= 2).then_some(revisions.len()),
+                cx,
+            ))
+            .child(
+                v_flex()
+                    .id("history")
+                    .flex_1()
+                    .min_h_0()
+                    .pb_2()
+                    .child(body)
+                    .overflow_y_scrollbar(),
+            )
+    }
+}
+
+struct ComparePanel {
+    _subscription: Option<Subscription>,
+}
+
+impl ComparePanel {
+    fn new(cx: &mut Context<Self>) -> Self {
+        let subscription =
+            HistoryHost::model(cx).map(|model| cx.observe(&model, |_, _, cx| cx.notify()));
+        Self {
+            _subscription: subscription,
+        }
+    }
+}
+
+impl Render for ComparePanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(model) = HistoryHost::model(cx) else {
+            return v_flex()
+                .size_full()
+                .child(ui::empty_message("Compare is unavailable.", cx));
+        };
+        let selection = model.read(cx).compare.clone();
+        let Some(selection) = selection else {
+            return v_flex()
+                .size_full()
+                .child(ui::empty_message("Choose Compare on a saved version.", cx));
+        };
+        let current = note_text(&selection.path, cx).unwrap_or_default();
+        let lines = code_lines(&diff_lines(&selection.text, &current));
+        let theme = cx.theme();
+        let (muted, foreground, removed, added) = (
+            theme.muted_foreground,
+            theme.foreground,
+            theme.danger,
+            theme.success,
+        );
+        let (removed_bg, added_bg) = (removed.opacity(0.28), added.opacity(0.22));
+        let (background, border) = (theme.background, theme.border);
+        let (mono, mono_size) = (theme.mono_font_family.clone(), theme.mono_font_size);
+        let file_name = selection.path.file_name().to_string();
+        let when = format_when(selection.at);
+        let restore_path = selection.path.clone();
+        let restore_text = selection.text.clone();
+
+        v_flex().size_full().bg(background).child(
+            h_flex()
+                .flex_none()
+                .h(px(32.))
+                .px_3()
+                .gap_2()
+                .items_center()
+                .bg(theme.sidebar)
+                .border_b_1()
+                .border_color(border)
+                .child(div().text_sm().child(file_name))
+                .child(div().flex_1().min_w_0().truncate().text_xs().text_color(muted).child(when))
+                .child(
+                    Button::new("compare-restore")
+                        .ghost()
+                        .xsmall()
+                        .label("Restore")
+                        .on_click(move |_, window, cx| {
+                            restore(&restore_path, restore_text.clone(), window, cx);
+                        }),
+                ),
+        )
+        .child(
             v_flex()
-                .id("history")
+                .id("history-compare")
                 .flex_1()
                 .min_h_0()
-                .pb_2()
-                .child(list)
+                .w_full()
+                .font_family(mono)
+                .text_size(mono_size)
+                .bg(background)
+                .children(lines.into_iter().enumerate().map(|(index, line)| {
+                    let (marker, marker_color, row_bg) = match line.sign {
+                        "-" => ("-", removed, Some(removed_bg)),
+                        "+" => ("+", added, Some(added_bg)),
+                        _ => ("", muted, None),
+                    };
+                    let old_no = line_no(line.old);
+                    let new_no = line_no(line.new);
+                    h_flex()
+                        .id(("compare-line", index))
+                        .w_full()
+                        .min_h(px(20.))
+                        .items_center()
+                        .text_color(foreground)
+                        .when_some(row_bg, |row, background| row.bg(background))
+                        .child(line_number(old_no, muted))
+                        .child(line_number(new_no, muted))
+                        .child(
+                            div()
+                                .flex_none()
+                                .w(px(16.))
+                                .text_center()
+                                .text_color(marker_color)
+                                .child(marker),
+                        )
+                        .child(
+                            div()
+                                .pr_3()
+                                .whitespace_nowrap()
+                                .child(if line.text.is_empty() {
+                                    " ".to_string()
+                                } else {
+                                    line.text
+                                }),
+                        )
+                }))
                 .overflow_y_scrollbar(),
         )
     }
 }
 
-fn visit_row(visit: &Visit, active: Option<&VaultPath>, cx: &App) -> Stateful<Div> {
-    let muted = cx.theme().muted_foreground;
-    let path = visit.path.clone();
-    let open = path.clone();
-    let folder = path
-        .parent()
-        .filter(|parent| !parent.is_root())
-        .map(|parent| parent.to_string());
-    let current = active == Some(&path);
-    ui::row(SharedString::from(format!("history-{path}")), cx)
-        .when(current, |row| row.bg(cx.theme().list_active))
-        .child(
-            h_flex()
-                .w_full()
-                .min_w_0()
-                .gap_2()
-                .items_center()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_sm()
-                        .when(current, |name| name.font_weight(FontWeight::MEDIUM))
-                        .child(path.file_stem().to_string()),
-                )
-                .when_some(folder, |row, folder| {
-                    row.child(
-                        div()
-                            .flex_none()
-                            .max_w(px(120.))
-                            .truncate()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(folder),
-                    )
-                })
-                .child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(muted)
-                        .child(format_clock(visit.opened_at)),
-                ),
-        )
-        .on_click(move |event, window, cx| {
-            let options = if event.modifiers().secondary(cx) {
-                OpenOptions::new().in_new_tab()
-            } else {
-                OpenOptions::new()
-            };
-            workspace::open_note(open.clone(), options, window, cx);
-        })
+fn line_number(number: String, color: gpui_kit::Hsla) -> gpui_kit::Div {
+    div()
+        .flex_none()
+        .w(px(36.))
+        .pr_2()
+        .text_right()
+        .text_color(color)
+        .child(number)
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
-
     use super::*;
 
-    fn note(path: &str) -> VaultPath {
-        VaultPath::new(path)
-    }
-
-    fn stamp(date: NaiveDate) -> i64 {
-        Local
-            .from_local_datetime(&date.and_hms_opt(15, 0, 0).unwrap())
-            .single()
-            .unwrap()
-            .timestamp()
+    #[test]
+    fn a_version_is_kept_only_when_the_text_changes() {
+        let mut log = NoteLog::default();
+        assert!(log.record("Hello", 1, 80));
+        assert!(!log.record("Hello", 2, 80));
+        assert!(log.record("Hello world", 3, 80));
+        assert_eq!(log.revisions.len(), 2);
+        assert_eq!(log.previous().unwrap().text, "Hello");
+        assert_eq!(log.revisions.last().unwrap().text, "Hello world");
     }
 
     #[test]
-    fn opening_a_note_moves_it_to_the_front_and_builds_a_back_stack() {
-        let mut history = History::default();
-        history.note_opened(note("a.md"), 1);
-        history.note_opened(note("b.md"), 2);
-        history.note_opened(note("a.md"), 3);
-        history.note_opened(note("a.md"), 3);
-
-        assert_eq!(
-            history
-                .visits
-                .iter()
-                .map(|visit| visit.path.as_str())
-                .collect::<Vec<_>>(),
-            ["a.md", "b.md"]
-        );
-        assert_eq!(history.visits[0].opened_at, 3);
-        assert_eq!(history.back.len(), 2);
-        assert!(history.forward.is_empty());
-        assert_eq!(history.current.as_ref().unwrap().as_str(), "a.md");
-    }
-
-    #[test]
-    fn back_and_forward_revisit_notes_until_a_new_one_is_opened() {
-        let mut history = History::default();
-        history.note_opened(note("a.md"), 1);
-        history.note_opened(note("b.md"), 2);
-        history.note_opened(note("c.md"), 3);
-
-        assert_eq!(history.go_back(4).unwrap().as_str(), "b.md");
-        assert_eq!(history.go_back(5).unwrap().as_str(), "a.md");
-        assert!(history.go_back(6).is_none());
-        assert_eq!(history.go_forward(7).unwrap().as_str(), "b.md");
-        assert_eq!(history.visits[0].path.as_str(), "b.md");
-
-        history.note_opened(note("d.md"), 8);
-        assert!(history.forward.is_empty());
-        assert_eq!(history.current.as_ref().unwrap().as_str(), "d.md");
-        assert_eq!(history.go_back(9).unwrap().as_str(), "b.md");
-    }
-
-    #[test]
-    fn stacks_drop_the_oldest_entry_past_the_cap() {
-        let mut history = History::default();
-        for n in 0..=MAX_STACK + 5 {
-            history.note_opened(note(&format!("n{n}.md")), n as i64);
+    fn old_versions_drop_off_past_the_limit() {
+        let mut log = NoteLog::default();
+        for n in 0..=5 {
+            assert!(log.record(&format!("v{n}"), n, 3));
         }
-        assert_eq!(history.back.len(), MAX_STACK);
-        assert_eq!(history.back[0].as_str(), "n5.md");
-        assert_eq!(history.visits.len(), MAX_VISITS);
+        assert_eq!(log.revisions.len(), 3);
+        assert_eq!(log.revisions[0].text, "v3");
+        assert_eq!(log.revisions.last().unwrap().text, "v5");
     }
 
     #[test]
-    fn clear_keeps_only_the_open_note() {
-        let mut history = History::default();
-        history.note_opened(note("a.md"), 1);
-        history.note_opened(note("b.md"), 2);
-        assert!(history.clear(3));
-        assert_eq!(history.visits.len(), 1);
-        assert_eq!(history.visits[0].path.as_str(), "b.md");
-        assert!(history.back.is_empty());
-        assert!(!history.can_clear());
-        assert!(!history.clear(4));
+    fn labels_count_characters_added_or_removed() {
+        assert_eq!(change_label("Hi", "Hello"), "+3");
+        assert_eq!(change_label("Hello", "Hi"), "-3");
+        assert_eq!(change_label("ab", "ba"), "edited");
+        assert_eq!(snippet("\n\n  Keep this line\n"), "Keep this line");
     }
 
     #[test]
-    fn rename_trash_and_missing_files_leave_the_lists() {
-        let mut history = History::default();
-        history.note_opened(note("Keep.md"), 1);
-        history.note_opened(note("Projects/Plan.md"), 2);
-        history.note_opened(note("Projects/Done.md"), 3);
-        assert!(history.rebase(&note("Projects"), &note("Archive")));
+    fn timestamps_show_milliseconds_and_older_seconds_still_read() {
+        let millis = format_when(1_763_000_000_123);
+        let seconds = format_when(1_763_000_000);
+        assert_eq!(millis.len(), 23, "{millis}");
+        assert_eq!(seconds.len(), 23, "{seconds}");
+        assert!(millis.ends_with(".123"), "{millis}");
+        assert!(seconds.ends_with(".000"), "{seconds}");
+        assert_eq!(&millis[..19], &seconds[..19]);
+    }
+
+    #[test]
+    fn compare_lines_up_unchanged_text() {
+        let lines = diff_lines("a\nb\nc\n", "a\nc\nd\n");
         assert_eq!(
-            history.current.as_ref().unwrap().as_str(),
-            "Archive/Done.md"
+            lines,
+            vec![
+                DiffLine::Same("a".into()),
+                DiffLine::Removed("b".into()),
+                DiffLine::Same("c".into()),
+                DiffLine::Added("d".into()),
+            ]
         );
-        assert!(
-            history
-                .visits
-                .iter()
-                .any(|visit| visit.path.as_str() == "Archive/Plan.md")
-        );
-
-        assert!(history.drop_under(&note("Archive/Done.md")));
-        assert!(history.current.is_none());
-        assert!(
-            history
-                .visits
-                .iter()
-                .all(|visit| visit.path.as_str() != "Archive/Done.md")
-        );
-
-        assert!(history.prune(|path| path.as_str() == "Keep.md"));
-        assert_eq!(history.visits.len(), 1);
-        assert_eq!(history.visits[0].path.as_str(), "Keep.md");
-    }
-
-    #[test]
-    fn days_group_today_yesterday_and_older_dates() {
-        let today = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
-        let visits = vec![
-            Visit {
-                path: note("now.md"),
-                opened_at: stamp(today),
-            },
-            Visit {
-                path: note("yesterday.md"),
-                opened_at: stamp(today.pred_opt().unwrap()),
-            },
-            Visit {
-                path: note("november.md"),
-                opened_at: stamp(NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()),
-            },
-            Visit {
-                path: note("last-year.md"),
-                opened_at: stamp(NaiveDate::from_ymd_opt(2025, 12, 31).unwrap()),
-            },
-        ];
-        let groups = group_visits(&visits, today);
-        let labels: Vec<&str> = groups.iter().map(|(label, _)| label.as_str()).collect();
-        assert_eq!(labels, ["Today", "Yesterday", "Nov 1", "Dec 31, 2025"]);
+        let code = code_lines(&lines);
+        assert_eq!(code[0].old, Some(1));
+        assert_eq!(code[0].new, Some(1));
+        assert_eq!(code[0].sign, "");
+        assert_eq!(code[1].old, Some(2));
+        assert_eq!(code[1].new, None);
+        assert_eq!(code[1].sign, "-");
+        assert_eq!(code[2].old, Some(3));
+        assert_eq!(code[2].new, Some(2));
+        assert_eq!(code[3].old, None);
+        assert_eq!(code[3].new, Some(3));
+        assert_eq!(code[3].sign, "+");
+        assert_eq!(code[3].text, "d");
     }
 }

@@ -20,8 +20,8 @@ pub(crate) fn open_settings(window: &mut Window, cx: &mut App) {
     }
     window.open_dialog(cx, |dialog, window, cx| {
         let height = (window.viewport_size().height - px(120.)).min(px(680.));
-        // Sync sits under Files and links. Other plugin pages come last, so
-        // enabling one leaves the pages above it in place.
+        // Sync and the history it keeps sit under Files and links. Other
+        // plugin pages come last, so enabling one leaves the pages above it.
         let (sync, plugins) = plugin_pages(cx);
         let mut pages = vec![
             appearance_page(cx),
@@ -57,9 +57,10 @@ fn plugin_separator() -> SettingPage {
         })))
 }
 
-/// The Sync page, then every other plugin settings page.
+/// The Sync and History pages, then every other plugin settings page.
 fn plugin_pages(cx: &mut App) -> (Vec<SettingPage>, Vec<SettingPage>) {
     let mut sync = Vec::new();
+    let mut history = Vec::new();
     let mut rest = Vec::new();
     for (manifest, tab) in PluginHost::global(cx).settings_tabs() {
         let title = tab.title().unwrap_or(manifest.name()).clone();
@@ -70,12 +71,15 @@ fn plugin_pages(cx: &mut App) -> (Vec<SettingPage>, Vec<SettingPage>) {
         let page = SettingPage::new(title)
             .icon(icon)
             .groups(tab.build(cx).iter().map(setting_group));
-        if manifest.id().as_ref() == "sync" {
-            sync.push(page);
-        } else {
-            rest.push(page);
+        match manifest.id().as_ref() {
+            "sync" => sync.push(page),
+            // History explains what sync writes, so it stays beside it
+            // whatever order the core plugins register in.
+            "history" => history.push(page),
+            _ => rest.push(page),
         }
     }
+    sync.extend(history);
     (sync, rest)
 }
 

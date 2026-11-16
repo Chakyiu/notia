@@ -153,7 +153,7 @@ fn main() {
     screens.close_dialogs();
     screens.dispatch(OpenSettings);
     // Word goal is the only plugin settings page in this vault, under the divider.
-    screens.click(269., 443.);
+    screens.click(269., 540.);
     screens.save("19-community-plugin-options");
     screens.close_dialogs();
 

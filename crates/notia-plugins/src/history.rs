@@ -299,22 +299,6 @@ fn change_label(before: &str, after: &str) -> String {
     }
 }
 
-fn snippet(text: &str) -> String {
-    let line = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("Empty");
-    let line = line.trim();
-    let count = line.chars().count();
-    if count > 72 {
-        format!("{}…", line.chars().take(72).collect::<String>())
-    } else if line.is_empty() {
-        "Empty".to_string()
-    } else {
-        line.to_string()
-    }
-}
-
 fn log_file(dir: &Path, note: &VaultPath) -> PathBuf {
     dir.join(format!("{note}.json"))
 }
@@ -846,45 +830,51 @@ impl Render for HistoryPanel {
                     let version_text = revision.text.clone();
                     let version_at = revision.at;
                     ui::row(SharedString::from(format!("history-{index}")), cx).child(
-                        h_flex().w_full().items_center().gap_1().child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_0p5()
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .when(latest, |row| row.font_weight(FontWeight::MEDIUM))
-                                        .child(format_when(revision.at)),
-                                )
-                                .child(
-                                    div().truncate().text_xs().text_color(muted).child(label),
-                                ),
-                        )
-                        .when(!latest, |row| {
-                            let compare_path = version_path.clone();
-                            let compare_text = version_text.clone();
-                            row.child(
-                                Button::new(SharedString::from(format!(
-                                    "history-compare-{index}"
-                                )))
-                                .icon(Icon::new(Lucide::GitCompare))
-                                .ghost()
-                                .xsmall()
-                                .tooltip("Compare")
-                                .on_click(move |_, window, cx| {
-                                    cx.stop_propagation();
-                                    let path = compare_path.clone();
-                                    let text = compare_text.clone();
-                                    if let Some(model) = HistoryHost::model(cx) {
-                                        model.update(cx, |model, cx| {
-                                            model.open_compare(path, version_at, text, cx);
-                                        });
-                                    }
-                                    open_compare_popup(window, cx);
-                                }),
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .when(latest, |row| row.font_weight(FontWeight::MEDIUM))
+                                            .child(format_when(revision.at)),
+                                    )
+                                    .child(
+                                        div().truncate().text_xs().text_color(muted).child(label),
+                                    ),
                             )
-                        }),
+                            .when(!latest, |row| {
+                                let compare_path = version_path.clone();
+                                let compare_text = version_text.clone();
+                                row.child(
+                                    Button::new(SharedString::from(format!(
+                                        "history-compare-{index}"
+                                    )))
+                                    .icon(Icon::new(Lucide::GitCompare))
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Compare")
+                                    .on_click(
+                                        move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            let path = compare_path.clone();
+                                            let text = compare_text.clone();
+                                            if let Some(model) = HistoryHost::model(cx) {
+                                                model.update(cx, |model, cx| {
+                                                    model.open_compare(path, version_at, text, cx);
+                                                });
+                                            }
+                                            open_compare_popup(window, cx);
+                                        },
+                                    ),
+                                )
+                            }),
                     )
                 }))
                 .into_any_element()
@@ -953,75 +943,83 @@ impl Render for ComparePanel {
         let restore_path = selection.path.clone();
         let restore_text = selection.text.clone();
 
-        v_flex().size_full().bg(background).child(
-            h_flex()
-                .flex_none()
-                .h(px(32.))
-                .px_3()
-                .gap_2()
-                .items_center()
-                .bg(theme.sidebar)
-                .border_b_1()
-                .border_color(border)
-                .child(div().text_sm().child(file_name))
-                .child(div().flex_1().min_w_0().truncate().text_xs().text_color(muted).child(when))
-                .child(
-                    Button::new("compare-restore")
-                        .ghost()
-                        .xsmall()
-                        .label("Restore")
-                        .on_click(move |_, window, cx| {
-                            restore(&restore_path, restore_text.clone(), window, cx);
-                        }),
-                ),
-        )
-        .child(
-            v_flex()
-                .id("history-compare")
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .font_family(mono)
-                .text_size(mono_size)
-                .bg(background)
-                .children(lines.into_iter().enumerate().map(|(index, line)| {
-                    let (marker, marker_color, row_bg) = match line.sign {
-                        "-" => ("-", removed, Some(removed_bg)),
-                        "+" => ("+", added, Some(added_bg)),
-                        _ => ("", muted, None),
-                    };
-                    let old_no = line_no(line.old);
-                    let new_no = line_no(line.new);
-                    h_flex()
-                        .id(("compare-line", index))
-                        .w_full()
-                        .min_h(px(20.))
-                        .items_center()
-                        .text_color(foreground)
-                        .when_some(row_bg, |row, background| row.bg(background))
-                        .child(line_number(old_no, muted))
-                        .child(line_number(new_no, muted))
-                        .child(
-                            div()
-                                .flex_none()
-                                .w(px(16.))
-                                .text_center()
-                                .text_color(marker_color)
-                                .child(marker),
-                        )
-                        .child(
-                            div()
-                                .pr_3()
-                                .whitespace_nowrap()
-                                .child(if line.text.is_empty() {
+        v_flex()
+            .size_full()
+            .bg(background)
+            .child(
+                h_flex()
+                    .flex_none()
+                    .h(px(32.))
+                    .px_3()
+                    .gap_2()
+                    .items_center()
+                    .bg(theme.sidebar)
+                    .border_b_1()
+                    .border_color(border)
+                    .child(div().text_sm().child(file_name))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(when),
+                    )
+                    .child(
+                        Button::new("compare-restore")
+                            .ghost()
+                            .xsmall()
+                            .label("Restore")
+                            .on_click(move |_, window, cx| {
+                                restore(&restore_path, restore_text.clone(), window, cx);
+                            }),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .id("history-compare")
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .font_family(mono)
+                    .text_size(mono_size)
+                    .bg(background)
+                    .children(lines.into_iter().enumerate().map(|(index, line)| {
+                        let (marker, marker_color, row_bg) = match line.sign {
+                            "-" => ("-", removed, Some(removed_bg)),
+                            "+" => ("+", added, Some(added_bg)),
+                            _ => ("", muted, None),
+                        };
+                        let old_no = line_no(line.old);
+                        let new_no = line_no(line.new);
+                        h_flex()
+                            .id(("compare-line", index))
+                            .w_full()
+                            .min_h(px(20.))
+                            .items_center()
+                            .text_color(foreground)
+                            .when_some(row_bg, |row, background| row.bg(background))
+                            .child(line_number(old_no, muted))
+                            .child(line_number(new_no, muted))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(16.))
+                                    .text_center()
+                                    .text_color(marker_color)
+                                    .child(marker),
+                            )
+                            .child(div().pr_3().whitespace_nowrap().child(
+                                if line.text.is_empty() {
                                     " ".to_string()
                                 } else {
                                     line.text
-                                }),
-                        )
-                }))
-                .overflow_y_scrollbar(),
-        )
+                                },
+                            ))
+                    }))
+                    .overflow_y_scrollbar(),
+            )
     }
 }
 
@@ -1066,7 +1064,6 @@ mod tests {
         assert_eq!(change_label("Hi", "Hello"), "+3");
         assert_eq!(change_label("Hello", "Hi"), "-3");
         assert_eq!(change_label("ab", "ba"), "edited");
-        assert_eq!(snippet("\n\n  Keep this line\n"), "Keep this line");
     }
 
     #[test]

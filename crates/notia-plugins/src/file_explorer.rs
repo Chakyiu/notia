@@ -12,7 +12,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputState},
     list::ListItem,
-    menu::PopupMenuItem,
+    menu::{ContextMenuExt as _, PopupMenuItem},
     tree::{TreeEvent, TreeItem, TreeState, tree},
     v_flex,
 };
@@ -281,12 +281,7 @@ impl FileExplorer {
     }
 
     fn rename(&mut self, path: VaultPath, window: &mut Window, cx: &mut Context<Self>) {
-        let current = if path.is_markdown() {
-            path.file_stem()
-        } else {
-            path.file_name()
-        }
-        .to_string();
+        let current = editable_name(&path).to_string();
         let input = cx.new(|cx| InputState::new(window, cx).default_value(current));
         let submit = {
             let input = input.clone();
@@ -333,11 +328,7 @@ impl FileExplorer {
     }
 
     fn delete(&mut self, path: VaultPath, window: &mut Window, cx: &mut Context<Self>) {
-        let name = if path.is_markdown() {
-            path.file_stem()
-        } else {
-            path.file_name()
-        };
+        let name = editable_name(&path);
         let title = SharedString::from(format!("Delete “{name}”?"));
         let trash = Rc::new(move |window: &mut Window, cx: &mut App| {
             if let Err(error) = Notia::vault(cx).update(cx, |vault, cx| vault.trash(&path, cx)) {
@@ -383,6 +374,14 @@ impl FileExplorer {
             _ => None,
         };
         let icon = PluginHost::global(cx).navigation_icon(&path, kind, entry.is_expanded(), cx);
+        let board_label = if path.is_kanban() {
+            Some("KANBAN")
+        } else if path.is_canvas() {
+            Some("CANVAS")
+        } else {
+            None
+        };
+        let chip = theme.muted;
         let drag = ReorderDrag {
             path: path.clone(),
             label: entry.item().label.clone(),
@@ -474,6 +473,18 @@ impl FileExplorer {
                             ))
                             .when_some(icon, |row, icon| row.child(icon.flex_none()))
                             .child(div().truncate().child(entry.item().label.clone()))
+                            .when_some(board_label, |row, label| {
+                                row.child(
+                                    div()
+                                        .flex_none()
+                                        .px_1()
+                                        .rounded_sm()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .bg(chip)
+                                        .child(label),
+                                )
+                            })
                             .when(kind == EntryKind::Attachment, |row| {
                                 row.child(
                                     div()
@@ -534,6 +545,7 @@ impl Render for FileExplorer {
         let kinds = self.kinds.clone();
         let menu_kinds = self.kinds.clone();
         let explorer = cx.weak_entity();
+        let blank = explorer.clone();
         let row_owner = explorer.clone();
         let drop_target = self.drop_target.clone();
 
@@ -556,6 +568,14 @@ impl Render for FileExplorer {
                     .small()
                     .tooltip("New canvas")
                     .on_click(|_, window, cx| workspace::new_canvas(None, window, cx)),
+            )
+            .child(
+                Button::new("explorer-new-kanban")
+                    .icon(Icon::new(Lucide::Kanban))
+                    .ghost()
+                    .small()
+                    .tooltip("New kanban")
+                    .on_click(|_, window, cx| workspace::new_kanban(None, window, cx)),
             )
             .child(
                 Button::new("explorer-new-folder")
@@ -592,8 +612,13 @@ impl Render for FileExplorer {
             let kind = menu_kinds.get(&id).copied().unwrap_or(EntryKind::Note);
             let explorer = explorer.clone();
             let menu = if kind == EntryKind::Folder {
-                let (note_folder, canvas_folder, folder_parent, explorer) =
-                    (path.clone(), path.clone(), path.clone(), explorer.clone());
+                let (note_folder, canvas_folder, kanban_folder, folder_parent, explorer) = (
+                    path.clone(),
+                    path.clone(),
+                    path.clone(),
+                    path.clone(),
+                    explorer.clone(),
+                );
                 menu.item(
                     PopupMenuItem::new("New note")
                         .icon(Icon::new(Lucide::FilePlus))
@@ -606,6 +631,13 @@ impl Render for FileExplorer {
                         .icon(Icon::new(Lucide::Frame))
                         .on_click(move |_, window, cx| {
                             workspace::new_canvas(Some(canvas_folder.clone()), window, cx)
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("New kanban")
+                        .icon(Icon::new(Lucide::Kanban))
+                        .on_click(move |_, window, cx| {
+                            workspace::new_kanban(Some(kanban_folder.clone()), window, cx)
                         }),
                 )
                 .item(
@@ -683,10 +715,48 @@ impl Render for FileExplorer {
                 )
         });
 
-        v_flex()
-            .size_full()
-            .child(toolbar)
-            .child(div().flex_1().min_h_0().px_1().child(tree))
+        v_flex().size_full().child(toolbar).child(
+            div()
+                .id("explorer-blank")
+                .flex_1()
+                .min_h_0()
+                .px_1()
+                .child(tree)
+                .context_menu(move |menu, _, _| {
+                    let folder_owner = blank.clone();
+                    let collapse_owner = blank.clone();
+                    menu.item(
+                        PopupMenuItem::new("New note")
+                            .icon(Icon::new(Lucide::FilePlus))
+                            .on_click(|_, window, cx| workspace::new_note(None, window, cx)),
+                    )
+                    .item(
+                        PopupMenuItem::new("New canvas")
+                            .icon(Icon::new(Lucide::Frame))
+                            .on_click(|_, window, cx| workspace::new_canvas(None, window, cx)),
+                    )
+                    .item(
+                        PopupMenuItem::new("New kanban")
+                            .icon(Icon::new(Lucide::Kanban))
+                            .on_click(|_, window, cx| workspace::new_kanban(None, window, cx)),
+                    )
+                    .item(
+                        PopupMenuItem::new("New folder")
+                            .icon(Icon::new(Lucide::FolderPlus))
+                            .on_click(move |_, window, cx| {
+                                _ = folder_owner.update(cx, |this, cx| {
+                                    this.new_folder(VaultPath::root(), window, cx)
+                                });
+                            }),
+                    )
+                    .separator()
+                    .item(
+                        PopupMenuItem::new("Collapse all").on_click(move |_, _, cx| {
+                            _ = collapse_owner.update(cx, |this, cx| this.collapse_all(cx));
+                        }),
+                    )
+                }),
+        )
     }
 }
 
@@ -706,6 +776,16 @@ impl FileOrder {
 
     fn save(&self, cx: &App) {
         Notia::save_plugin_data(ORDER_PLUGIN_ID, self, cx);
+    }
+}
+
+/// The name the rename field shows. Markdown and Kanban hide the extension,
+/// which the vault puts back. A canvas keeps `.canvas` in the field.
+fn editable_name(path: &VaultPath) -> &str {
+    if path.is_markdown() || path.is_kanban() {
+        path.file_stem()
+    } else {
+        path.file_name()
     }
 }
 

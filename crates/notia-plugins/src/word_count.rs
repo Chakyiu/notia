@@ -39,10 +39,14 @@ impl WordCount {
     }
 
     fn count(workspace: &notia_plugin::WorkspaceModel) -> Option<(usize, usize)> {
-        workspace.active_note().map(|note| {
-            let meta = parse_note(note.text());
-            (meta.word_count, meta.char_count)
-        })
+        let note = workspace.active_note()?;
+        // A canvas or kanban is a board. Counting its JSON would fill the
+        // status bar with the words of the file format.
+        if !note.path().is_markdown() {
+            return None;
+        }
+        let meta = parse_note(note.text());
+        Some((meta.word_count, meta.char_count))
     }
 }
 

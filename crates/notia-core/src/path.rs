@@ -66,6 +66,17 @@ impl VaultPath {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("canvas"))
     }
 
+    /// A Kanban note: columns of cards, saved as JSON.
+    pub fn is_kanban(&self) -> bool {
+        self.extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("kanban"))
+    }
+
+    /// A note Notia opens itself: Markdown, a canvas, or a kanban board.
+    pub fn is_note(&self) -> bool {
+        self.is_markdown() || self.is_canvas() || self.is_kanban()
+    }
+
     /// The whole path without the `.md` extension, the form wikilinks use.
     pub fn without_markdown_extension(&self) -> &str {
         if self.is_markdown() {
@@ -169,8 +180,13 @@ mod tests {
         assert_eq!(path.file_stem(), "2026-11-13");
         assert_eq!(path.extension(), Some("md"));
         assert!(path.is_markdown());
+        assert!(path.is_note());
         assert!(VaultPath::new("Board.canvas").is_canvas());
+        assert!(VaultPath::new("Board.kanban").is_kanban());
+        assert!(VaultPath::new("Board.kanban").is_note());
         assert!(!path.is_canvas());
+        assert!(!path.is_kanban());
+        assert!(!VaultPath::new("photo.png").is_note());
         assert_eq!(path.without_markdown_extension(), "Daily/2026-11-13");
         assert_eq!(path.parent(), Some(VaultPath::new("Daily")));
         assert_eq!(VaultPath::new("a.md").parent(), Some(VaultPath::root()));

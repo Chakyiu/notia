@@ -9,6 +9,8 @@ pub fn entry_icon(path: &VaultPath, kind: EntryKind, expanded: bool) -> IconName
     match kind {
         EntryKind::Folder if expanded => IconName::FolderOpen,
         EntryKind::Folder => IconName::FolderClosed,
+        EntryKind::Note if path.is_kanban() => IconName::Kanban,
+        EntryKind::Note if path.is_canvas() => IconName::Frame,
         EntryKind::Note => IconName::FileText,
         EntryKind::Attachment => attachment_icon(path.extension()),
     }

@@ -15,6 +15,7 @@ actions!(
         OpenSettings,
         NewNote,
         NewCanvas,
+        NewKanban,
         CloseTab,
         NextTab,
         PreviousTab,

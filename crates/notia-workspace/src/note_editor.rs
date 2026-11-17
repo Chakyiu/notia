@@ -27,7 +27,8 @@ use notia_plugin::{
 };
 
 use crate::attachments::{self, image_in_vault};
-use crate::canvas::CanvasView;
+use crate::canvas::{CanvasEvent, CanvasView};
+use crate::kanban::{KanbanEvent, KanbanView};
 use crate::reading::{CALLOUTS, NoteUrl, ReadingMarkdown, parse_note_url, to_reading_markdown};
 
 /// Small, so that plugins written in JavaScript hold editor ids exactly.
@@ -53,6 +54,11 @@ pub struct NoteEditor {
     /// The board of a Canvas note. Such a note has no Markdown text, so this
     /// view draws the body and does the saving.
     canvas: Option<Entity<CanvasView>>,
+    /// The columns of a Kanban note. It saves itself, like a canvas.
+    kanban: Option<Entity<KanbanView>>,
+    /// The Kanban board as JSON. Kept on the note so a publish can use the
+    /// text the board just emitted, without reading that view again.
+    kanban_text: Option<SharedString>,
     reading: Entity<TextViewState>,
     reading_markdown: ReadingMarkdown,
     extensions: MarkdownExtensions,
@@ -84,6 +90,11 @@ impl NoteEditor {
         let canvas = path
             .is_canvas()
             .then(|| cx.new(|cx| CanvasView::new(path.clone(), &text, cx)));
+        let kanban = path
+            .is_kanban()
+            .then(|| cx.new(|cx| KanbanView::new(path.clone(), &text, cx)));
+        let kanban_text = kanban.as_ref().map(|board| board.read(cx).document());
+        let board = canvas.is_some() || kanban.is_some();
         let title =
             cx.new(|cx| InputState::new(window, cx).default_value(path.file_stem().to_string()));
         let editor = cx.new(|cx| {
@@ -95,17 +106,28 @@ impl NoteEditor {
                     hard_tabs: false,
                 })
                 .placeholder("Start writing…")
-                .default_value(if canvas.is_some() { "" } else { &text })
+                .default_value(if board { "" } else { &text })
         });
-        let reading_markdown = to_reading_markdown(&text);
+        let reading_markdown = to_reading_markdown(if board { "" } else { &text });
         let reading = cx.new(|cx| TextViewState::markdown(&reading_markdown.text, cx));
 
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&editor, window, Self::on_editor_event),
             cx.subscribe_in(&title, window, Self::on_title_event),
             cx.subscribe_in(&vault, window, Self::on_vault_event),
             cx.observe_global_in::<AppSettings>(window, Self::apply_settings),
         ];
+        if let Some(board) = &canvas {
+            subscriptions.push(cx.subscribe(board, |_, _, _: &CanvasEvent, cx| {
+                cx.emit(NoteEditorEvent::Edited);
+            }));
+        }
+        if let Some(board) = &kanban {
+            subscriptions.push(cx.subscribe(board, |this, _, event: &KanbanEvent, cx| {
+                this.kanban_text = Some(event.document.clone());
+                cx.emit(NoteEditorEvent::Edited);
+            }));
+        }
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -114,6 +136,8 @@ impl NoteEditor {
             title,
             editor,
             canvas,
+            kanban,
+            kanban_text,
             reading,
             reading_markdown,
             extensions: callout_extensions(),
@@ -151,9 +175,20 @@ impl NoteEditor {
         self.mode
     }
 
-    /// The text in the editor, including unsaved edits.
+    /// The text in the editor, including unsaved edits. A kanban note reports
+    /// its board, which is what gets written to the file.
     pub fn text(&self, cx: &App) -> SharedString {
+        if let Some(canvas) = &self.canvas {
+            return canvas.read(cx).document();
+        }
+        if let Some(text) = &self.kanban_text {
+            return text.clone();
+        }
         self.editor.read(cx).value()
+    }
+
+    fn is_board(&self) -> bool {
+        self.canvas.is_some() || self.kanban.is_some()
     }
 
     pub fn cursor_line(&self, cx: &App) -> usize {
@@ -164,6 +199,10 @@ impl NoteEditor {
         if let Some(canvas) = &self.canvas {
             let handle = canvas.read(cx).focus_handle(cx);
             handle.focus(window, cx);
+            return;
+        }
+        if let Some(kanban) = &self.kanban {
+            kanban.read(cx).focus_handle(cx).focus(window, cx);
             return;
         }
         match self.mode {
@@ -221,6 +260,24 @@ impl NoteEditor {
 
     /// The text and selection as plugins see them: with their queued edits.
     pub fn snapshot(&self, cx: &App) -> EditorSnapshot {
+        if let Some(canvas) = &self.canvas {
+            return EditorSnapshot {
+                id: self.id,
+                path: self.path.clone(),
+                mode: self.mode,
+                text: canvas.read(cx).document(),
+                selection: EditorSelection::cursor(0),
+            };
+        }
+        if let Some(text) = &self.kanban_text {
+            return EditorSnapshot {
+                id: self.id,
+                path: self.path.clone(),
+                mode: self.mode,
+                text: text.clone(),
+                selection: EditorSelection::cursor(0),
+            };
+        }
         let state = self.editor.read(cx);
         let mut text = state.value();
         let mut selection = selection_of(state);
@@ -245,10 +302,7 @@ impl NoteEditor {
     /// Queues a plugin's edit, which needs a window to apply. It must fit
     /// the text as it will be after the edits queued before it.
     pub fn queue_edit(&mut self, transaction: EditorTransaction, cx: &App) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.canvas.is_none(),
-            "a canvas note holds a board, not text"
-        );
+        anyhow::ensure!(!self.is_board(), "this note is a board, not text");
         let snapshot = self.snapshot(cx);
         transaction.apply(&snapshot.text, snapshot.selection)?;
         self.pending_edits.push(transaction);
@@ -301,7 +355,7 @@ impl NoteEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.canvas.is_some() {
+        if self.is_board() {
             // A board has no text to format or undo through the editor.
             self.focus(window, cx);
             return;
@@ -336,6 +390,10 @@ impl NoteEditor {
     pub fn save(&mut self, cx: &mut Context<Self>) {
         if let Some(canvas) = &self.canvas {
             canvas.update(cx, |canvas, cx| canvas.save(cx));
+            return;
+        }
+        if let Some(kanban) = &self.kanban {
+            kanban.update(cx, |kanban, cx| kanban.save(cx));
             return;
         }
         self.save_task = None;
@@ -439,14 +497,20 @@ impl NoteEditor {
         match event {
             VaultEvent::Renamed { from, to } => {
                 if let Some(path) = self.path.rebase(from, to) {
-                    self.path = path;
+                    self.path = path.clone();
+                    if let Some(canvas) = &self.canvas {
+                        canvas.update(cx, |canvas, cx| canvas.set_path(path.clone(), cx));
+                    }
+                    if let Some(kanban) = &self.kanban {
+                        kanban.update(cx, |kanban, cx| kanban.set_path(path, cx));
+                    }
                     self.reset_title(window, cx);
                     cx.emit(NoteEditorEvent::Moved);
                     cx.notify();
                 }
             }
             VaultEvent::NotesChanged(paths)
-                if !self.dirty && self.canvas.is_none() && paths.contains(&self.path) =>
+                if !self.dirty && !self.is_board() && paths.contains(&self.path) =>
             {
                 // Changed outside Notia: show the new text unless the user
                 // has edits of their own.
@@ -618,9 +682,12 @@ impl Render for NoteEditor {
             .px_8();
 
         let root = Notia::vault(cx).read(cx).vault().root().to_path_buf();
-        let body = match self.canvas.clone() {
-            Some(board) => board.into_any_element(),
-            None => match self.mode {
+        let body = if let Some(board) = self.canvas.clone() {
+            board.into_any_element()
+        } else if let Some(board) = self.kanban.clone() {
+            board.into_any_element()
+        } else {
+            match self.mode {
                 ViewMode::Editing => self.render_source(&appearance, false).into_any_element(),
                 ViewMode::Half => {
                     let border = theme.border;
@@ -648,7 +715,7 @@ impl Render for NoteEditor {
                 ViewMode::Reading => self
                     .render_reading(&appearance, root, false)
                     .into_any_element(),
-            },
+            }
         };
 
         v_flex()
@@ -658,7 +725,7 @@ impl Render for NoteEditor {
             .on_action(cx.listener(|this, _: &Paste, window, cx| {
                 // The editor handles paste while it is on screen. In preview
                 // the note itself is focused, so the image is saved here.
-                if this.mode != ViewMode::Reading || this.canvas.is_some() {
+                if this.mode != ViewMode::Reading || this.is_board() {
                     return;
                 }
                 let Some(item) = cx.read_from_clipboard() else {
@@ -692,7 +759,7 @@ impl Render for NoteEditor {
                             .h_full()
                             .w_full()
                             .pt_6()
-                            .when(self.canvas.is_none(), |this| {
+                            .when(!self.is_board(), |this| {
                                 this.when_some(appearance.max_width, |this, width| {
                                     this.max_w(width + inset)
                                 })
@@ -712,7 +779,7 @@ impl Render for NoteEditor {
                                     .items_center()
                                     .pr_8()
                                     .child(div().flex_1().min_w_0().child(title))
-                                    .when(self.canvas.is_none(), |row| {
+                                    .when(!self.is_board(), |row| {
                                         row.child(self.render_mode_switch(cx))
                                     }),
                             )

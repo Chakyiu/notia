@@ -227,6 +227,22 @@ impl VaultModel {
         Ok(path)
     }
 
+    /// Creates a Kanban note in `folder`.
+    pub fn create_kanban(
+        &mut self,
+        folder: &VaultPath,
+        title: &str,
+        content: &str,
+        cx: &mut Context<Self>,
+    ) -> io::Result<VaultPath> {
+        let path = self.vault.create_kanban(folder, title, content)?;
+        let modified = self.vault.modified(&path);
+        self.index
+            .insert(IndexedNote::new(path.clone(), content, modified));
+        self.rescan(cx);
+        Ok(path)
+    }
+
     pub fn create_folder(
         &mut self,
         parent: &VaultPath,

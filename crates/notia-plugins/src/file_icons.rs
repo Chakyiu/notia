@@ -67,6 +67,14 @@ mod tests {
             Lucide::FileText
         );
         assert_eq!(
+            glyph(&VaultPath::new("Board.canvas"), EntryKind::Note, false),
+            Lucide::Frame
+        );
+        assert_eq!(
+            glyph(&VaultPath::new("Tasks.kanban"), EntryKind::Note, false),
+            Lucide::Kanban
+        );
+        assert_eq!(
             glyph(&VaultPath::new("shot.PNG"), EntryKind::Attachment, false),
             Lucide::FileImage
         );

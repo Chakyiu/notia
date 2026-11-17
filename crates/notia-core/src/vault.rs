@@ -106,7 +106,7 @@ impl Vault {
                     children,
                 });
             } else if file_type.is_file() {
-                let kind = if path.is_markdown() || path.is_canvas() {
+                let kind = if path.is_note() {
                     EntryKind::Note
                 } else {
                     EntryKind::Attachment
@@ -174,6 +174,16 @@ impl Vault {
         self.create_named(folder, title, "canvas", content)
     }
 
+    /// Creates a Kanban note, whose body is the board as JSON.
+    pub fn create_kanban(
+        &self,
+        folder: &VaultPath,
+        title: &str,
+        content: &str,
+    ) -> io::Result<VaultPath> {
+        self.create_named(folder, title, "kanban", content)
+    }
+
     fn create_named(
         &self,
         folder: &VaultPath,
@@ -197,9 +207,7 @@ impl Vault {
     pub fn rename(&self, path: &VaultPath, new_name: &str) -> io::Result<VaultPath> {
         let mut name = sanitize_file_name(new_name);
         if VaultPath::new(&name).extension().is_none()
-            && let Some(extension) = path
-                .extension()
-                .filter(|_| path.is_markdown() || path.is_canvas())
+            && let Some(extension) = path.extension().filter(|_| path.is_note())
         {
             name.push('.');
             name.push_str(extension);
@@ -470,5 +478,19 @@ mod tests {
         vault.create_note(&VaultPath::root(), "B", "b").unwrap();
         assert!(vault.rename(&a, "B").is_err());
         assert_eq!(vault.read_note(&"B.md".into()).unwrap(), "b");
+    }
+
+    #[test]
+    fn kanban_notes_keep_their_extension() {
+        let (_dir, vault) = vault();
+        let path = vault
+            .create_kanban(&VaultPath::root(), "Board", "{\"columns\":[]}")
+            .unwrap();
+        assert_eq!(path.as_str(), "Board.kanban");
+        assert_eq!(vault.scan().unwrap().entries()[0].kind, EntryKind::Note);
+        assert_eq!(vault.scan().unwrap().entries()[0].display_name(), "Board");
+        let renamed = vault.rename(&path, "Plan").unwrap();
+        assert_eq!(renamed.as_str(), "Plan.kanban");
+        assert_eq!(vault.read_note(&renamed).unwrap(), "{\"columns\":[]}");
     }
 }

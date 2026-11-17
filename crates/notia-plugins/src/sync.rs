@@ -303,6 +303,11 @@ fn flush_active_note(cx: &mut App) -> Result<(), String> {
     let Some(note) = Notia::workspace(cx).read(cx).active_note().cloned() else {
         return Ok(());
     };
+    // A canvas or kanban writes its own file. The text published for it used
+    // to be empty, and saving that here replaced the board.
+    if !note.path().is_markdown() {
+        return Ok(());
+    }
     let path = note.path().clone();
     let text = note.text().to_string();
     let unchanged = Notia::vault(cx)

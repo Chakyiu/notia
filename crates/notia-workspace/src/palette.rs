@@ -13,12 +13,12 @@ use gpui_kit::*;
 use notia_plugin::{
     OpenOptions, PaletteCommand, PluginHost,
     actions::{
-        CloseTab, EditMode, HalfEditMode, NewCanvas, NewNote, NextTab, OpenCommandPalette,
-        OpenQuickSwitcher, OpenSettings, PreviewMode, PreviousTab, SaveNote, ToggleLeftSidebar,
-        ToggleReadingView, ToggleRightSidebar, WORKSPACE_CONTEXT,
+        CloseTab, EditMode, HalfEditMode, NewCanvas, NewKanban, NewNote, NextTab,
+        OpenCommandPalette, OpenQuickSwitcher, OpenSettings, PreviewMode, PreviousTab, SaveNote,
+        ToggleLeftSidebar, ToggleReadingView, ToggleRightSidebar, WORKSPACE_CONTEXT,
     },
-    core::{VaultPath, fuzzy_score},
-    hotkeys,
+    core::{EntryKind, VaultPath, fuzzy_score},
+    entry_icon, hotkeys,
 };
 
 use crate::Workspace;
@@ -48,6 +48,11 @@ pub(crate) fn install(cx: &mut App) {
                 "Create new canvas",
                 None,
                 Some(Icon::new(Lucide::Frame)),
+            ),
+            PaletteCommand::core::<NewKanban>(
+                "Create new kanban",
+                None,
+                Some(Icon::new(Lucide::Kanban)),
             ),
             PaletteCommand::core::<OpenQuickSwitcher>(
                 "Open quick switcher",
@@ -272,12 +277,13 @@ impl Workspace {
                         .unwrap_or_default()
                         .into();
                     let label = name.clone();
+                    let icon = entry_icon(path, EntryKind::Note, false);
                     CommandItem::new().label(label).child(move |_, cx| {
                         let muted = cx.theme().muted_foreground;
                         h_flex()
                             .w_full()
                             .gap_2()
-                            .child(Icon::new(IconName::FileText).small().text_color(muted))
+                            .child(Icon::new(icon).small().text_color(muted))
                             .child(div().truncate().child(name.clone()))
                             .child(
                                 div()

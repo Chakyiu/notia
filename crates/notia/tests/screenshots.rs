@@ -189,8 +189,10 @@ fn main() {
         "the box followed the mouse: {board}"
     );
 
-    // A double-click on an empty part of the board adds a box.
+    // A double-click on an empty part of the board offers a text box or a
+    // note. Choosing the text box adds it.
     screens.click_at(660., 620., 2);
+    screens.click(730., 640.);
     let board = read_board();
     assert_eq!(
         board.matches("\"id\"").count(),
@@ -207,6 +209,36 @@ fn main() {
         "a connector was pulled: {board}"
     );
     screens.save("21-canvas-edited");
+    screens.dispatch(CloseTab);
+
+    // A Kanban note: columns of cards.
+    std::fs::write(
+        folder.path().join("Tasks.kanban"),
+        r#"{"columns":[
+            {"id":"1","title":"To do","cards":[{"id":"4","text":"Write the outline"},{"id":"5","text":"Sketch the board"}]},
+            {"id":"2","title":"Doing","cards":[{"id":"6","text":"Drag cards between columns"}]},
+            {"id":"3","title":"Done","cards":[{"id":"7","text":"Open the vault"}]}
+        ]}"#,
+    )
+    .expect("write a kanban");
+    screens
+        .cx
+        .update_window(screens.window, |_, window, cx| {
+            workspace::open_note(
+                VaultPath::new("Tasks.kanban"),
+                OpenOptions::new().in_new_tab(),
+                window,
+                cx,
+            );
+        })
+        .expect("open the kanban");
+    screens.save("22-kanban");
+    let kanban =
+        std::fs::read_to_string(folder.path().join("Tasks.kanban")).expect("read the kanban back");
+    assert!(
+        kanban.contains("Write the outline") && kanban.contains("Drag cards between columns"),
+        "opening the board kept its cards: {kanban}"
+    );
     screens.dispatch(CloseTab);
 
     screens.cx.update(|cx| {

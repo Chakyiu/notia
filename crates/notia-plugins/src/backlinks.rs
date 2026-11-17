@@ -6,7 +6,7 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 use notia_plugin::{
     Notia, OpenOptions, Panel, PanelPlacement, Plugin, PluginContext, PluginManifest, StatusItem,
     core::{Backlink, Link, VaultPath},
-    workspace,
+    note_tooltip, workspace,
 };
 
 use crate::ui;
@@ -123,12 +123,14 @@ impl Render for BacklinksPanel {
 
         let incoming = self.links.incoming.iter().map(|(source, links)| {
             let open = source.clone();
+            let tip = source.clone();
             v_flex()
                 .child(
                     ui::row(SharedString::from(format!("backlink-source-{source}")), cx)
                         .text_sm()
                         .font_weight(FontWeight::MEDIUM)
                         .truncate()
+                        .tooltip(note_tooltip(tip))
                         .child(source.file_stem().to_string())
                         .on_click(move |_, window, cx| {
                             workspace::open_note(open.clone(), OpenOptions::new(), window, cx)
@@ -160,8 +162,10 @@ impl Render for BacklinksPanel {
             .map(|(ix, (link, resolved))| {
                 let target = link.target.clone();
                 let from = active.clone();
+                let tip = resolved.clone();
                 ui::row(("outgoing-link", ix), cx)
                     .text_sm()
+                    .when_some(tip, |row, path| row.tooltip(note_tooltip(path)))
                     .child(
                         h_flex()
                             .gap_1p5()

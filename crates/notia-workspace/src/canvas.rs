@@ -983,7 +983,7 @@ impl Render for CanvasView {
         let weak = cx.weak_entity();
 
         div()
-            .id("canvas")
+            .id(("canvas", cx.entity_id().as_u64()))
             .key_context("Canvas")
             .size_full()
             .relative()
@@ -1188,7 +1188,7 @@ impl CanvasView {
                 .child(bounds_probe(self.toolbar_bounds.clone()))
                 .when(!is_note(node), |bar| {
                     bar.child(
-                        Button::new("canvas-rename")
+                        Button::new(("canvas-rename", cx.entity_id().as_u64()))
                             .icon(Icon::new(Lucide::Pencil))
                             .ghost()
                             .xsmall()
@@ -1202,7 +1202,7 @@ impl CanvasView {
                     )
                 })
                 .child(
-                    Button::new("canvas-duplicate")
+                    Button::new(("canvas-duplicate", cx.entity_id().as_u64()))
                         .icon(Icon::new(Lucide::CopyPlus))
                         .ghost()
                         .xsmall()
@@ -1210,7 +1210,7 @@ impl CanvasView {
                         .on_click(cx.listener(|this, _, _, cx| this.duplicate_selected(cx))),
                 )
                 .child(
-                    Button::new("canvas-delete")
+                    Button::new(("canvas-delete", cx.entity_id().as_u64()))
                         .icon(Icon::new(Lucide::Trash))
                         .ghost()
                         .xsmall()
@@ -1287,7 +1287,7 @@ impl CanvasView {
                 })
         } else {
             menu.child(
-                Button::new("canvas-place-text")
+                Button::new(("canvas-place-text", cx.entity_id().as_u64()))
                     .ghost()
                     .small()
                     .icon(Icon::new(Lucide::Type))
@@ -1298,7 +1298,7 @@ impl CanvasView {
                     })),
             )
             .child(
-                Button::new("canvas-place-note")
+                Button::new(("canvas-place-note", cx.entity_id().as_u64()))
                     .ghost()
                     .small()
                     .icon(Icon::new(Lucide::FileText))

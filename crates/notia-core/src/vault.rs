@@ -133,6 +133,14 @@ impl Vault {
             .ok()
     }
 
+    /// When the file was created. `None` when the file is missing or the
+    /// platform does not record a creation time.
+    pub fn created(&self, path: &VaultPath) -> Option<SystemTime> {
+        fs::metadata(self.abs_path(path))
+            .and_then(|meta| meta.created())
+            .ok()
+    }
+
     /// Writes through a temporary sibling and a rename, so a crash never
     /// leaves a half-written note behind.
     pub fn write_note(&self, path: &VaultPath, content: &str) -> io::Result<()> {
@@ -478,6 +486,18 @@ mod tests {
         vault.create_note(&VaultPath::root(), "B", "b").unwrap();
         assert!(vault.rename(&a, "B").is_err());
         assert_eq!(vault.read_note(&"B.md".into()).unwrap(), "b");
+    }
+
+    #[test]
+    fn reads_created_and_modified_times() {
+        let (_dir, vault) = vault();
+        let path = vault.create_note(&VaultPath::root(), "Times", "x").unwrap();
+        assert!(vault.modified(&path).is_some());
+        if cfg!(any(target_os = "macos", target_os = "windows")) {
+            assert!(vault.created(&path).is_some());
+        }
+        assert!(vault.created(&VaultPath::new("missing.md")).is_none());
+        assert!(vault.modified(&VaultPath::new("missing.md")).is_none());
     }
 
     #[test]

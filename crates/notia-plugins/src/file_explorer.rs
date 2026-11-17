@@ -6,13 +6,13 @@ use std::{
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Side, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::{DialogAction, DialogClose, DialogFooter},
     h_flex,
     input::{Input, InputState},
     list::ListItem,
-    menu::{ContextMenuExt as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
     tree::{TreeEvent, TreeItem, TreeState, tree},
     v_flex,
 };
@@ -21,7 +21,7 @@ use notia_plugin::{
     AppSettings, Command, Notia, OpenOptions, Panel, PanelPlacement, Plugin, PluginContext,
     PluginHost, PluginManifest, VaultEvent,
     core::{EntryKind, FileEntry, FileTree, VaultPath},
-    workspace,
+    note_tooltip, workspace,
 };
 use serde::{Deserialize, Serialize};
 
@@ -71,6 +71,8 @@ pub struct FileExplorer {
     active: Option<VaultPath>,
     /// The row under a drag, and whether the drop goes before it, after it, or into it.
     drop_target: Option<(SharedString, DropPlace)>,
+    /// Toolbar button ids the user turned off. Empty means every button shows.
+    hidden_buttons: Vec<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -110,6 +112,7 @@ impl FileExplorer {
             expanded: HashSet::new(),
             active: workspace.read(cx).active_path().cloned(),
             drop_target: None,
+            hidden_buttons: FileOrder::load(cx).toolbar_hidden,
             _subscriptions: subscriptions,
         };
         explorer.rebuild(cx);
@@ -265,6 +268,33 @@ impl FileExplorer {
     fn collapse_all(&mut self, cx: &mut Context<Self>) {
         self.expanded.clear();
         self.rebuild(cx);
+    }
+
+    fn run_toolbar(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match id {
+            "new-note" => workspace::new_note(None, window, cx),
+            "new-canvas" => workspace::new_canvas(None, window, cx),
+            "new-kanban" => workspace::new_kanban(None, window, cx),
+            "new-folder" => self.new_folder(VaultPath::root(), window, cx),
+            "collapse" => self.collapse_all(cx),
+            _ => {}
+        }
+    }
+
+    /// Shows or hides one toolbar button and keeps the choice with the vault.
+    fn toggle_toolbar(&mut self, id: &str, cx: &mut Context<Self>) {
+        if !explorer_buttons().iter().any(|button| button.id == id) {
+            return;
+        }
+        if let Some(index) = self.hidden_buttons.iter().position(|item| item == id) {
+            self.hidden_buttons.remove(index);
+        } else {
+            self.hidden_buttons.push(id.to_string());
+        }
+        let mut order = FileOrder::load(cx);
+        order.toolbar_hidden = self.hidden_buttons.clone();
+        order.save(cx);
+        cx.notify();
     }
 
     fn new_folder(&mut self, parent: VaultPath, window: &mut Window, cx: &mut Context<Self>) {
@@ -471,7 +501,8 @@ impl FileExplorer {
                             .child(div().w_4().flex_none().children(
                                 chevron.map(|icon| Icon::new(icon).xsmall().text_color(muted)),
                             ))
-                            .when_some(icon, |row, icon| row.child(icon.flex_none()))
+                            // Row gap is 4px. The extra 2px makes 6px between the glyph and the name.
+                            .when_some(icon, |row, icon| row.child(icon.flex_none().mr(px(2.))))
                             .child(div().truncate().child(entry.item().label.clone()))
                             .when_some(board_label, |row, label| {
                                 row.child(
@@ -524,6 +555,9 @@ impl FileExplorer {
                         },
                     ),
             )
+            .when(kind == EntryKind::Note, |item| {
+                item.tooltip(note_tooltip(path.clone()))
+            })
             .when(kind != EntryKind::Folder, |item| {
                 item.on_click(move |event, window, cx| {
                     let options = if event.modifiers().secondary(cx) {
@@ -549,52 +583,37 @@ impl Render for FileExplorer {
         let row_owner = explorer.clone();
         let drop_target = self.drop_target.clone();
 
-        let toolbar = h_flex()
+        let hidden = self.hidden_buttons.clone();
+        let mut toolbar = h_flex()
+            .id("explorer-toolbar")
+            .w_full()
+            .min_h(px(32.))
             .justify_center()
+            .items_center()
             .gap_1()
-            .py_1()
-            .child(
-                Button::new("explorer-new-note")
-                    .icon(Icon::new(Lucide::FilePlus))
+            .py_1();
+        for button in explorer_buttons() {
+            if hidden.iter().any(|id| id == button.id) {
+                continue;
+            }
+            let action = button.id;
+            toolbar = toolbar.child(
+                Button::new(button.element_id)
+                    .icon(Icon::new(button.icon))
                     .ghost()
                     .small()
-                    .tooltip("New note")
-                    .on_click(|_, window, cx| workspace::new_note(None, window, cx)),
-            )
-            .child(
-                Button::new("explorer-new-canvas")
-                    .icon(Icon::new(Lucide::Frame))
-                    .ghost()
-                    .small()
-                    .tooltip("New canvas")
-                    .on_click(|_, window, cx| workspace::new_canvas(None, window, cx)),
-            )
-            .child(
-                Button::new("explorer-new-kanban")
-                    .icon(Icon::new(Lucide::Kanban))
-                    .ghost()
-                    .small()
-                    .tooltip("New kanban")
-                    .on_click(|_, window, cx| workspace::new_kanban(None, window, cx)),
-            )
-            .child(
-                Button::new("explorer-new-folder")
-                    .icon(Icon::new(Lucide::FolderPlus))
-                    .ghost()
-                    .small()
-                    .tooltip("New folder")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.new_folder(VaultPath::root(), window, cx)
+                    .tooltip(button.label)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.run_toolbar(action, window, cx);
                     })),
-            )
-            .child(
-                Button::new("explorer-collapse")
-                    .icon(Icon::new(Lucide::ChevronsDownUp))
-                    .ghost()
-                    .small()
-                    .tooltip("Collapse all")
-                    .on_click(cx.listener(|this, _, _, cx| this.collapse_all(cx))),
             );
+        }
+        // The row stays when every button is hidden, so a right-click can
+        // bring one back. The same menu opens on a button.
+        let menu_hidden = hidden;
+        let menu_owner = explorer.clone();
+        let toolbar = toolbar
+            .context_menu(move |menu, _, _| toolbar_menu(menu, &menu_hidden, menu_owner.clone()));
 
         let tree = tree(&self.tree, move |_, entry, _, _, cx| {
             let kind = kinds
@@ -760,13 +779,94 @@ impl Render for FileExplorer {
     }
 }
 
-/// The order chosen for each folder. An empty parent path is the vault root.
-/// Child names are file names, so a note keeps its `.md`. Files and folders
-/// share the list.
+/// The order chosen for each folder, plus which toolbar buttons are hidden.
+/// An empty parent path is the vault root. Child names are file names, so a
+/// note keeps its `.md`. Files and folders share the list.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct FileOrder {
     #[serde(default)]
     folders: BTreeMap<String, Vec<String>>,
+    /// Ids from [`explorer_buttons`] the user turned off.
+    #[serde(default)]
+    toolbar_hidden: Vec<String>,
+}
+
+struct ExplorerButton {
+    id: &'static str,
+    element_id: &'static str,
+    label: &'static str,
+    icon: Lucide,
+}
+
+fn explorer_buttons() -> [ExplorerButton; 5] {
+    [
+        ExplorerButton {
+            id: "new-note",
+            element_id: "explorer-new-note",
+            label: "New note",
+            icon: Lucide::FilePlus,
+        },
+        ExplorerButton {
+            id: "new-canvas",
+            element_id: "explorer-new-canvas",
+            label: "New canvas",
+            icon: Lucide::Frame,
+        },
+        ExplorerButton {
+            id: "new-kanban",
+            element_id: "explorer-new-kanban",
+            label: "New kanban",
+            icon: Lucide::Kanban,
+        },
+        ExplorerButton {
+            id: "new-folder",
+            element_id: "explorer-new-folder",
+            label: "New folder",
+            icon: Lucide::FolderPlus,
+        },
+        ExplorerButton {
+            id: "collapse",
+            element_id: "explorer-collapse",
+            label: "Collapse all",
+            icon: Lucide::ChevronsDownUp,
+        },
+    ]
+}
+
+/// Shown buttons keep their usual order. Hidden ones follow them.
+fn toolbar_menu_order(hidden: &[String]) -> Vec<ExplorerButton> {
+    let (shown, hidden_buttons): (Vec<_>, Vec<_>) = explorer_buttons()
+        .into_iter()
+        .partition(|button| !hidden.iter().any(|id| id == button.id));
+    shown.into_iter().chain(hidden_buttons).collect()
+}
+
+fn toolbar_menu(menu: PopupMenu, hidden: &[String], owner: WeakEntity<FileExplorer>) -> PopupMenu {
+    let mut menu = menu
+        .check_side(Side::Right)
+        .scrollable(true)
+        .item(PopupMenuItem::label("Show"));
+    let mut separated = false;
+    let mut any_visible = false;
+    for button in toolbar_menu_order(hidden) {
+        let visible = !hidden.iter().any(|id| id == button.id);
+        if !visible && any_visible && !separated {
+            menu = menu.separator();
+            separated = true;
+        }
+        any_visible |= visible;
+        let id = button.id;
+        let owner = owner.clone();
+        menu = menu.item(
+            PopupMenuItem::new(button.label)
+                .icon(Icon::new(button.icon))
+                .checked(visible)
+                .on_click(move |_, _, cx| {
+                    _ = owner.update(cx, |this, cx| this.toggle_toolbar(id, cx));
+                }),
+        );
+    }
+    menu
 }
 
 impl FileOrder {
@@ -1001,7 +1101,8 @@ fn order_entries(entries: &mut [FileEntry], parent: &str, order: &BTreeMap<Strin
 #[cfg(test)]
 mod tests {
     use super::{
-        DropPlace, displayed_sibling_names, order_entries, place_name, resolve_drop, retarget_names,
+        DropPlace, FileOrder, displayed_sibling_names, order_entries, place_name, resolve_drop,
+        retarget_names, toolbar_menu_order,
     };
     use notia_plugin::core::{EntryKind, FileEntry, VaultPath};
     use std::collections::BTreeMap;
@@ -1013,6 +1114,32 @@ mod tests {
             kind,
             children: Vec::new(),
         }
+    }
+
+    #[test]
+    fn hidden_toolbar_buttons_follow_the_ones_still_shown() {
+        let order = toolbar_menu_order(&["new-canvas".into(), "collapse".into()]);
+        let rows: Vec<_> = order.iter().map(|button| button.id).collect();
+        assert_eq!(
+            rows,
+            [
+                "new-note",
+                "new-kanban",
+                "new-folder",
+                "new-canvas",
+                "collapse"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_older_order_file_hides_no_toolbar_buttons() {
+        let order: FileOrder = serde_json::from_str(r#"{"folders":{"":["a.md"]}}"#).unwrap();
+        assert!(order.toolbar_hidden.is_empty());
+        assert_eq!(
+            order.folders.get("").map(Vec::as_slice),
+            Some(["a.md".to_string()].as_slice())
+        );
     }
 
     #[test]

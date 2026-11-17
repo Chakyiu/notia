@@ -86,7 +86,9 @@ pub fn init(cx: &mut App) {
         })
     });
     cx.on_action(|_: &ToggleReadingView, cx| with_workspace(cx, Workspace::toggle_reading_view));
-    cx.on_action(|_: &SaveNote, cx| with_workspace(cx, |this, _, cx| this.save_active(cx)));
+    cx.on_action(|_: &SaveNote, cx| {
+        with_workspace(cx, |this, window, cx| this.save_active(window, cx))
+    });
     cx.on_action(|_: &ToggleLeftSidebar, cx| {
         with_workspace(cx, |this, _, cx| {
             this.toggle_sidebar(PanelPlacement::Left, cx)
@@ -122,14 +124,18 @@ pub fn window_options(cx: &App) -> WindowOptions {
 /// Opens the workspace window for the vault set up by `notia_plugin::init`.
 pub fn open_window(options: WindowOptions, cx: &mut App) -> anyhow::Result<AnyWindowHandle> {
     let title: SharedString = Notia::vault(cx).read(cx).name().into();
-    let (window, workspace) = gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| Workspace::new(window, cx))
+    let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
+        let workspace = cx.new(|cx| Workspace::new(window, cx));
+        // The window draws, and the note-opened event flushes, before
+        // `open_window` returns. Plugins that read the editor then would
+        // otherwise find no handle.
+        cx.set_global(WorkspaceSlot {
+            window: window.window_handle(),
+            workspace: workspace.downgrade(),
+        });
+        set_handle(Rc::new(Handle), cx);
+        workspace
     })?;
-    cx.set_global(WorkspaceSlot {
-        window,
-        workspace: workspace.downgrade(),
-    });
-    set_handle(Rc::new(Handle), cx);
     window.update(cx, |_, window, _| {
         window.activate_window();
         window.set_window_title(&title);

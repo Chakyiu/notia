@@ -195,6 +195,29 @@ impl NoteEditor {
         self.editor.read(cx).cursor_position().line as usize
     }
 
+    /// Whether the caret, the title, or this note's board holds keyboard focus.
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus_handle.contains_focused(window, cx)
+            || self
+                .title
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+            || self
+                .editor
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+            || self
+                .canvas
+                .as_ref()
+                .is_some_and(|board| board.read(cx).focus_handle(cx).contains_focused(window, cx))
+            || self
+                .kanban
+                .as_ref()
+                .is_some_and(|board| board.read(cx).focus_handle(cx).contains_focused(window, cx))
+    }
+
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         if let Some(canvas) = &self.canvas {
             let handle = canvas.read(cx).focus_handle(cx);
@@ -555,7 +578,7 @@ impl NoteEditor {
             .gap_1()
             .items_center()
             .child(
-                Button::new("note-mode")
+                Button::new(("note-mode", self.id.as_u64()))
                     .icon(Icon::new(icon))
                     .outline()
                     .small()
@@ -564,7 +587,7 @@ impl NoteEditor {
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_mode(window, cx))),
             )
             .child(
-                Button::new("note-more")
+                Button::new(("note-more", self.id.as_u64()))
                     .icon(Icon::new(Lucide::Ellipsis))
                     .ghost()
                     .small()
@@ -660,8 +683,10 @@ impl NoteEditor {
             .text_size(appearance.font_size)
             .line_height(relative(appearance.line_height))
             .size_full()
-            .when(half, |view| view.px_4().pb_8())
-            .when(!half, |view| view.px_8().pb_16())
+            // Padding belongs on the sides only. Bottom padding insets the
+            // virtual list, so the last lines sit under a blank bar.
+            .when(half, |view| view.px_4())
+            .when(!half, |view| view.px_8())
     }
 }
 
@@ -727,7 +752,7 @@ impl Render for NoteEditor {
         };
 
         v_flex()
-            .id("note-editor")
+            .id(("note-editor", self.id.as_u64()))
             .key_context("NoteEditor")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &Paste, window, cx| {

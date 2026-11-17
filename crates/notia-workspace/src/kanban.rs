@@ -567,7 +567,7 @@ impl KanbanView {
                             .child("Board"),
                     )
                     .child(
-                        Button::new("kanban-layout-reset")
+                        Button::new(("kanban-layout-reset", cx.entity_id().as_u64()))
                             .label("Reset")
                             .ghost()
                             .xsmall()
@@ -1066,7 +1066,7 @@ impl Render for KanbanView {
         }
 
         v_flex()
-            .id("kanban")
+            .id(("kanban", cx.entity_id().as_u64()))
             .key_context("Kanban")
             .relative()
             .size_full()
@@ -1087,7 +1087,7 @@ impl Render for KanbanView {
                     .px_4()
                     .pt_3()
                     .child(
-                        Button::new("kanban-add-column")
+                        Button::new(("kanban-add-column", cx.entity_id().as_u64()))
                             .icon(Icon::new(IconName::Plus))
                             .label("Add column")
                             .outline()
@@ -1101,7 +1101,7 @@ impl Render for KanbanView {
                         h_flex()
                             .gap_1()
                             .child(
-                                Button::new("kanban-settings")
+                                Button::new(("kanban-settings", cx.entity_id().as_u64()))
                                     .icon(Icon::new(IconName::SlidersHorizontal))
                                     .ghost()
                                     .small()
@@ -1133,7 +1133,7 @@ impl Render for KanbanView {
             .when_some(settings, |board, panel| board.child(panel))
             .child(
                 div()
-                    .id("kanban-scroll")
+                    .id(("kanban-scroll", cx.entity_id().as_u64()))
                     .flex_1()
                     .min_h_0()
                     .overflow_x_scrollbar()
@@ -1235,7 +1235,11 @@ impl KanbanView {
 
         let count = column.cards.len();
         v_flex()
-            .id(SharedString::from(format!("kanban-column-{}", column.id)))
+            .id(SharedString::from(format!(
+                "kanban-column-{}-{}",
+                cx.entity_id().as_u64(),
+                column.id
+            )))
             .w(px(self.board.layout.column_width()))
             .h_full()
             .flex_none()
@@ -1245,7 +1249,11 @@ impl KanbanView {
             .border_color(if targeted { accent } else { border })
             .child(
                 h_flex()
-                    .id(SharedString::from(format!("kanban-head-{}", column.id)))
+                    .id(SharedString::from(format!(
+                        "kanban-head-{}-{}",
+                        cx.entity_id().as_u64(),
+                        column.id
+                    )))
                     .flex_none()
                     .items_center()
                     .gap_1()
@@ -1279,7 +1287,11 @@ impl KanbanView {
                             )
                             .into_any_element(),
                         None => div()
-                            .id(SharedString::from(format!("kanban-title-{}", column.id)))
+                            .id(SharedString::from(format!(
+                                "kanban-title-{}-{}",
+                                cx.entity_id().as_u64(),
+                                column.id
+                            )))
                             .flex_1()
                             .min_w_0()
                             .truncate()
@@ -1299,20 +1311,28 @@ impl KanbanView {
                             .child(count.to_string()),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("kanban-drop-col-{}", column.id)))
-                            .icon(Icon::new(IconName::X))
-                            .ghost()
-                            .xsmall()
-                            .text_color(muted)
-                            .tooltip("Delete column")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.delete_column(column_id.clone(), cx);
-                            })),
+                        Button::new(SharedString::from(format!(
+                            "kanban-drop-col-{}-{}",
+                            cx.entity_id().as_u64(),
+                            column.id
+                        )))
+                        .icon(Icon::new(IconName::X))
+                        .ghost()
+                        .xsmall()
+                        .text_color(muted)
+                        .tooltip("Delete column")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.delete_column(column_id.clone(), cx);
+                        })),
                     ),
             )
             .child(
                 v_flex()
-                    .id(SharedString::from(format!("kanban-cards-{}", column.id)))
+                    .id(SharedString::from(format!(
+                        "kanban-cards-{}-{}",
+                        cx.entity_id().as_u64(),
+                        column.id
+                    )))
                     .flex_1()
                     .min_h_0()
                     .gap_2()
@@ -1342,19 +1362,23 @@ impl KanbanView {
             )
             .child(
                 div().flex_none().px_2().pb_2().child(
-                    Button::new(SharedString::from(format!("kanban-add-{}", column.id)))
-                        .icon(Icon::new(IconName::Plus))
-                        .label("Add card")
-                        .ghost()
-                        .small()
-                        .w_full()
-                        .tooltip("Add card")
-                        .on_click({
-                            let column_id = column.id.clone();
-                            cx.listener(move |this, _, window, cx| {
-                                this.add_card(column_id.clone(), window, cx);
-                            })
-                        }),
+                    Button::new(SharedString::from(format!(
+                        "kanban-add-{}-{}",
+                        cx.entity_id().as_u64(),
+                        column.id
+                    )))
+                    .icon(Icon::new(IconName::Plus))
+                    .label("Add card")
+                    .ghost()
+                    .small()
+                    .w_full()
+                    .tooltip("Add card")
+                    .on_click({
+                        let column_id = column.id.clone();
+                        cx.listener(move |this, _, window, cx| {
+                            this.add_card(column_id.clone(), window, cx);
+                        })
+                    }),
                 ),
             )
     }
@@ -1396,7 +1420,10 @@ impl KanbanView {
         let delete_id = id.clone();
 
         div()
-            .id(SharedString::from(format!("kanban-card-{id}")))
+            .id(SharedString::from(format!(
+                "kanban-card-{}-{id}",
+                cx.entity_id().as_u64()
+            )))
             .relative()
             .w_full()
             .min_h(px(36.))
@@ -1447,7 +1474,7 @@ impl KanbanView {
             .on_drop(cx.listener(|this, drag: &CardDrag, _, cx| this.drop_card(drag, cx)))
             .child(match editing_field {
                 Some(field) => card_scroll(
-                    &id,
+                    &format!("{}-{id}", cx.entity_id().as_u64()),
                     card_max,
                     Textarea::new(&field)
                         .appearance(false)
@@ -1463,7 +1490,7 @@ impl KanbanView {
                     .child("Empty card")
                     .into_any_element(),
                 None => card_scroll(
-                    &id,
+                    &format!("{}-{id}", cx.entity_id().as_u64()),
                     card_max,
                     div()
                         .w_full()
@@ -1477,15 +1504,18 @@ impl KanbanView {
             .when(selected, |card| {
                 card.child(
                     div().absolute().top(px(4.)).right(px(4.)).child(
-                        Button::new(SharedString::from(format!("kanban-del-{delete_id}")))
-                            .icon(Icon::new(IconName::Trash))
-                            .ghost()
-                            .xsmall()
-                            .text_color(danger)
-                            .tooltip("Delete card")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.delete_card(delete_id.clone(), cx);
-                            })),
+                        Button::new(SharedString::from(format!(
+                            "kanban-del-{}-{delete_id}",
+                            cx.entity_id().as_u64()
+                        )))
+                        .icon(Icon::new(IconName::Trash))
+                        .ghost()
+                        .xsmall()
+                        .text_color(danger)
+                        .tooltip("Delete card")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.delete_card(delete_id.clone(), cx);
+                        })),
                     ),
                 )
             })
@@ -1498,28 +1528,31 @@ impl KanbanView {
         let source = visible_line_breaks(&to_reading_markdown(&card.text).text);
         let from = self.path.clone();
         let root = Notia::vault(cx).read(cx).vault().root().to_path_buf();
-        TextView::markdown(SharedString::from(format!("kanban-md-{}", card.id)), source)
-            .selectable(false)
-            .scrollable(false)
-            .text_sm()
-            .style(
-                TextViewStyle::default()
-                    .paragraph_gap(rems(0.25))
-                    .heading_font_size(|level, _| px(13. + (6 - u32::from(level)).min(4) as f32)),
-            )
-            .image_source(move |uri| image_in_vault(root.clone(), uri))
-            .on_link_click(move |url, event, window, cx| match parse_note_url(url) {
-                Some(NoteUrl::Note(target)) => {
-                    let new_tab = event.modifiers().secondary(cx);
-                    workspace::open_link(&target, Some(from.clone()), new_tab, window, cx);
-                }
-                Some(NoteUrl::Tag(tag)) => {
-                    Notia::workspace(cx).update(cx, |model, cx| {
-                        model.request_search(format!("tag:#{tag}").into(), cx);
-                    });
-                }
-                None => cx.open_url(url),
-            })
+        TextView::markdown(
+            SharedString::from(format!("kanban-md-{}-{}", cx.entity_id().as_u64(), card.id)),
+            source,
+        )
+        .selectable(false)
+        .scrollable(false)
+        .text_sm()
+        .style(
+            TextViewStyle::default()
+                .paragraph_gap(rems(0.25))
+                .heading_font_size(|level, _| px(13. + (6 - u32::from(level)).min(4) as f32)),
+        )
+        .image_source(move |uri| image_in_vault(root.clone(), uri))
+        .on_link_click(move |url, event, window, cx| match parse_note_url(url) {
+            Some(NoteUrl::Note(target)) => {
+                let new_tab = event.modifiers().secondary(cx);
+                workspace::open_link(&target, Some(from.clone()), new_tab, window, cx);
+            }
+            Some(NoteUrl::Tag(tag)) => {
+                Notia::workspace(cx).update(cx, |model, cx| {
+                    model.request_search(format!("tag:#{tag}").into(), cx);
+                });
+            }
+            None => cx.open_url(url),
+        })
     }
 }
 

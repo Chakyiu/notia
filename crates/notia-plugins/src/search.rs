@@ -13,7 +13,7 @@ use notia_plugin::{
     Command, Notia, OpenOptions, Panel, PanelPlacement, Plugin, PluginContext, PluginManifest,
     VaultEvent, WorkspaceEvent,
     core::{FileMatches, SearchQuery, VaultPath, search},
-    workspace,
+    note_tooltip, workspace,
 };
 
 use crate::ui;
@@ -136,6 +136,7 @@ impl SearchPanel {
         let toggle_path = file.path.clone();
 
         let title = ui::row(SharedString::from(format!("search-file-{}", file.path)), cx)
+            .tooltip(note_tooltip(file.path.clone()))
             .child(
                 h_flex()
                     .gap_1()

@@ -19,7 +19,7 @@ notia-plugins = { path = "crates/notia-plugins" }
 notia-js = { path = "crates/notia-js" }
 notia-sync = { path = "crates/notia-sync", default-features = false }
 
-gpui-kit = { version = "=0.9.1", features = [
+gpui-kit = { version = "=0.10.0", features = [
     "tree-sitter-markdown",
     "tree-sitter-yaml",
     "tree-sitter-toml",
@@ -63,6 +63,6 @@ markdown = { opt-level = 3 }
 [profile.release]
 strip = "symbols"
 
-# Context menus in gpui-component 0.9.1 put only 4px between an icon and its label.
+# Context menus in gpui-component 0.10.0 put only 4px between an icon and its label.
 [patch.crates-io]
 gpui-component = { path = "third_party/gpui-component" }

@@ -19,6 +19,9 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
+# Release checkouts omit the gitignored gpui-component patch Cargo.toml requires.
+bash "$root/scripts/fetch-gpui-component.sh"
+
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 dist="$root/dist"
 

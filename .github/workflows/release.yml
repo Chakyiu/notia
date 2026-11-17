@@ -56,6 +56,11 @@ jobs:
             libx11-dev libxcb1-dev libvulkan-dev libssl-dev cmake g++ \
             libfontconfig1-dev
 
+      # third_party/gpui-component is gitignored. Fetch it before Cargo reads the patch.
+      - name: Fetch the gpui-component patch
+        shell: bash
+        run: bash scripts/fetch-gpui-component.sh
+
       - name: Package
         shell: bash
         run: bash scripts/package.sh "${{ matrix.os }}"

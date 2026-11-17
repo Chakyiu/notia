@@ -1,0 +1,49 @@
+--- a/src/menu/menu_item.rs
++++ b/src/menu/menu_item.rs
+@@ -115,7 +115,7 @@
+                     Toggled::False
+                 })
+             })
+-            .gap_x_1()
++            .gap_x_2()
+             .py_1()
+             .px_2()
+             .text_base()
+--- a/src/menu/popup_menu.rs
++++ b/src/menu/popup_menu.rs
+@@ -1391,7 +1391,7 @@
+                     .flex_row_dir(cx)
+                     .cursor_default()
+                     .items_center()
+-                    .gap_x_1()
++                    .gap_x_2()
+                     .children(Self::render_icon(has_left_icon, false, None, window, cx))
+                     .child(div().flex_1().child(label.clone())),
+             ),
+@@ -1413,7 +1413,7 @@
+                         .flex_1()
+                         .min_h(item_height)
+                         .items_center()
+-                        .gap_x_1()
++                        .gap_x_2()
+                         .children(Self::render_icon(
+                             has_left_icon,
+                             is_left_check,
+@@ -1443,7 +1443,7 @@
+                 })
+                 .disabled(*disabled)
+                 .h(item_height)
+-                .gap_x_1()
++                .gap_x_2()
+                 .children(Self::render_icon(
+                     has_left_icon,
+                     is_left_check,
+@@ -1498,7 +1498,7 @@
+                         .min_h(item_height)
+                         .size_full()
+                         .items_center()
+-                        .gap_x_1()
++                        .gap_x_2()
+                         .children(Self::render_icon(
+                             has_left_icon,
+                             false,

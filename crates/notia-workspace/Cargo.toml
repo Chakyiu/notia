@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+repository = "https://github.com/Chakyiu/notia"
 
 [dependencies]
 anyhow.workspace = true
@@ -13,3 +14,4 @@ log.workspace = true
 notia-plugin.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }

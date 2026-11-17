@@ -202,6 +202,10 @@ cargo test -p notia --test screenshots   # renders the main screens to PNGs; nee
 
 Set `RUST_LOG` to change logging. The default filter is `warn,notia=info`.
 
+## Support
+
+[Buy me a coffee](https://buymeacoffee.com/chakyiu).
+
 ## License
 
 [MIT](LICENSE).

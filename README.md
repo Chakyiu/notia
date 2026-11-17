@@ -1,5 +1,7 @@
 # Notia
 
+<img src="crates/notia/resources/app-icon.png" alt="Notia" width="96">
+
 Notia is a note-taking app. Notes are plain Markdown files in a folder on your computer, called a vault. The file list, search, history, outline, backlinks, status bar, and themes are plugins, and each one can be turned off.
 
 ```
@@ -8,6 +10,8 @@ cargo run -p notia -- ~/Notes
 ```
 
 A folder on the command line opens that vault. Otherwise Notia opens the vault from last time, or asks where a new one should live. An empty vault starts with a few notes that explain the window.
+
+![The Welcome note in preview, with the file list and outline](docs/reading.png)
 
 ## Build
 
@@ -75,9 +79,15 @@ Pasted images are stored in `attachments/`. Deleted files move to `.trash` in th
 
 The button above a note cycles edit, half edit (Markdown and preview side by side), and preview. `⌘E` does the same.
 
+![Half edit, with the Markdown and the preview side by side](docs/half-edit.png)
+
 A Canvas note is a board instead of text: `.canvas` JSON with the same shape Obsidian's Canvas plugin uses. Create one with **Create new canvas** in the command palette, or from the Files panel. Double-click the board to add a box, type in it, drag it, drag from a dot on its side to join two boxes, and press delete or use the buttons above the selection. Scroll pans, and with `⌘` it zooms; the rail at the right edge zooms, fits the whole board, and steps back and forth. Groups, images, and file nodes are Notia's “to do”: boards made in another app keep their boxes and connectors.
 
+![A canvas, with two boxes joined by a connector](docs/canvas.png)
+
 A Kanban note is columns of cards, saved as `.kanban` JSON. Create one with **Create new kanban** in the command palette, or from the Files panel. A new board starts with To do, Doing, and Done. Add a card from its column and double-click it to edit. The card is Markdown: Enter finishes it, and Shift+Enter starts a new line. A card shows seven lines, and the rest scrolls inside it. The sliders button sets the column width, the card height, and the space between columns. Drag a card onto another card or column. Delete removes the selected card, and `⌘Z` steps back.
+
+![A kanban board, with To do, Doing, and Done](docs/kanban.png)
 
 Search accepts `"phrases"`, `tag:#name`, and `path:folder`.
 

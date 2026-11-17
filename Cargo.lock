@@ -4267,7 +4267,7 @@ dependencies = [
 
 [[package]]
 name = "notia"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -4286,7 +4286,7 @@ dependencies = [
 
 [[package]]
 name = "notia-android"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "jni",
  "notia-core",
@@ -4298,7 +4298,7 @@ dependencies = [
 
 [[package]]
 name = "notia-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "tempfile",
@@ -4306,7 +4306,7 @@ dependencies = [
 
 [[package]]
 name = "notia-js"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "gpui-kit",
@@ -4321,7 +4321,7 @@ dependencies = [
 
 [[package]]
 name = "notia-plugin"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "gpui-kit",
@@ -4336,7 +4336,7 @@ dependencies = [
 
 [[package]]
 name = "notia-plugins"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "gpui-kit",
@@ -4349,7 +4349,7 @@ dependencies = [
 
 [[package]]
 name = "notia-sync"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "getrandom 0.2.17",
@@ -4364,7 +4364,7 @@ dependencies = [
 
 [[package]]
 name = "notia-theme"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "gpui-kit",
@@ -4377,7 +4377,7 @@ dependencies = [
 
 [[package]]
 name = "notia-workspace"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "gpui-kit",

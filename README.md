@@ -214,7 +214,7 @@ Set `RUST_LOG` to change logging. The default filter is `warn,notia=info`.
 
 ## Support
 
-[Buy me a coffee](https://buymeacoffee.com/chakyiu).
+[![Buy me a coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://buymeacoffee.com/chakyiu)
 
 ## License
 

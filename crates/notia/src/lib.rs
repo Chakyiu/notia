@@ -7,8 +7,10 @@ extern crate gpui_kit as gpui;
 mod setup;
 pub mod welcome;
 
+use std::path::PathBuf;
+
 use gpui_kit::*;
-use notia_plugin::{actions::*, core::Vault};
+use notia_plugin::{Notia, actions::*, core::Vault};
 
 pub use setup::{mobile_vault_dir, remembered_vault};
 
@@ -129,12 +131,48 @@ fn boot(vault: Vault, cx: &mut App) {
     if !cx.has_global::<notia_plugin::theme::ThemeCatalog>() {
         notia_plugin::theme::init(cx);
     }
+    notia_workspace::vaults::install(
+        notia_workspace::vaults::VaultHooks {
+            list: setup::known_vaults,
+            open: switch_to,
+            forget: setup::forget_vault,
+            pick: setup::pick_vault,
+            default_vault: setup::default_vault,
+            set_default: setup::set_default_vault,
+        },
+        cx,
+    );
     notia_plugin::init(vault, cx);
     notia_workspace::init(cx);
     notia_plugins::register(cx);
     notia_js::register(cx);
     bind_quit(cx);
     cx.set_menus(menus());
+}
+
+/// Saves the open notes, then opens `folder` as the vault in a new window.
+pub(crate) fn switch_to(folder: PathBuf, cx: &mut App) -> Result<(), String> {
+    if !cx.has_global::<notia_plugin::PluginHost>() {
+        return open_at(&folder, true, cx);
+    }
+    let vault = Vault::open(&folder)
+        .map_err(|error| format!("Could not open {}: {error}", folder.display()))?;
+    if vault.scan().is_ok_and(|tree| tree.entries().is_empty())
+        && let Err(error) = welcome::create(&vault)
+    {
+        log::warn!("could not create the starter notes: {error}");
+    }
+    let root = vault.root().to_path_buf();
+    if Notia::vault(cx).read(cx).vault().root() == root {
+        return Ok(());
+    }
+    notia_workspace::persist_workspace(cx);
+    setup::remember(&root);
+    notia_plugin::replace_vault(vault, cx);
+    notia_plugins::register(cx);
+    notia_js::register(cx);
+    notia_workspace::reopen_workspace(cx)
+        .map_err(|error| format!("Could not open the window: {error:#}"))
 }
 
 fn menus() -> Vec<Menu> {
@@ -157,6 +195,8 @@ fn menus() -> Vec<Menu> {
                 MenuItem::Separator,
                 MenuItem::action("Save", SaveNote),
                 MenuItem::action("Close Tab", CloseTab),
+                MenuItem::Separator,
+                MenuItem::action("Manage Vault…", ManageVaults),
             ],
             disabled: false,
         },

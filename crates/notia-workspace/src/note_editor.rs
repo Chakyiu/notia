@@ -569,7 +569,7 @@ impl NoteEditor {
                     .ghost()
                     .small()
                     .tooltip("More options")
-                    .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, _| {
+                    .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, window, cx| {
                         let (open, copy, show) = (path.clone(), path.clone(), path.clone());
                         menu.item(PopupMenuItem::new("Open in new tab").on_click(
                             move |_, window, cx| {
@@ -606,6 +606,14 @@ impl NoteEditor {
                                 let path = Notia::vault(cx).read(cx).vault().abs_path(&show);
                                 cx.reveal_path(&path);
                             }),
+                        )
+                        .separator()
+                        .submenu_with_icon(
+                            Some(Icon::new(Lucide::FolderOpen)),
+                            "Manage vault",
+                            window,
+                            cx,
+                            |menu, _, cx| crate::vaults::vault_menu(menu, cx),
                         )
                     }),
             )

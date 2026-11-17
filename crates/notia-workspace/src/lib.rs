@@ -13,6 +13,7 @@ mod palette;
 mod palette_settings;
 mod reading;
 mod settings_dialog;
+pub mod vaults;
 mod workspace;
 
 use std::rc::Rc;
@@ -97,6 +98,7 @@ pub fn init(cx: &mut App) {
         })
     });
     cx.on_action(|_: &OpenSettings, cx| with_window(cx, settings_dialog::open_settings));
+    cx.on_action(|_: &ManageVaults, cx| with_window(cx, vaults::open_manager));
     cx.on_action(|action: &RunCommand, cx| {
         let id = action.id.clone();
         with_window(cx, move |window, cx| run_command(&id, window, cx));
@@ -133,6 +135,30 @@ pub fn open_window(options: WindowOptions, cx: &mut App) -> anyhow::Result<AnyWi
         window.set_window_title(&title);
     })?;
     Ok(window)
+}
+
+/// Writes open notes and the window layout before the vault changes.
+pub fn persist_workspace(cx: &mut App) {
+    let Some(workspace) = cx
+        .try_global::<WorkspaceSlot>()
+        .and_then(|slot| slot.workspace.upgrade())
+    else {
+        return;
+    };
+    let _ = workspace.update(cx, |this, cx| this.persist(cx));
+}
+
+/// Opens a workspace window for the vault that is current now, then closes
+/// the one that was showing the previous vault.
+pub fn reopen_workspace(cx: &mut App) -> anyhow::Result<()> {
+    let previous = cx.try_global::<WorkspaceSlot>().map(|slot| slot.window);
+    let window = open_window(window_options(cx), cx)?;
+    if let Some(previous) = previous.filter(|previous| *previous != window) {
+        cx.defer(move |cx| {
+            let _ = previous.update(cx, |_, window, _| window.remove_window());
+        });
+    }
+    Ok(())
 }
 
 struct WorkspaceSlot {

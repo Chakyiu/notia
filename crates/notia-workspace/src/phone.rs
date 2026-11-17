@@ -85,6 +85,9 @@ impl Workspace {
                     .overflow_hidden()
                     .child(body),
             )
+            .when(self.phone == PhoneScreen::Browse && !keyboard, |this| {
+                this.child(crate::vaults::footer(cx))
+            })
             .when(!keyboard, |this| this.child(self.render_phone_bar(cx)))
     }
 
@@ -218,11 +221,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme();
-        let (sidebar, foreground, muted) = (
-            theme.sidebar,
-            theme.sidebar_foreground,
-            theme.muted_foreground,
-        );
+        let (sidebar, foreground) = (theme.sidebar, theme.sidebar_foreground);
         let view = self
             .sidebar(placement)
             .active
@@ -235,13 +234,7 @@ impl Workspace {
                 .size_full()
                 .overflow_hidden()
                 .when(missing, |column| {
-                    column.child(
-                        div()
-                            .p_4()
-                            .text_sm()
-                            .text_color(muted)
-                            .child("No panel is turned on. Enable one in Settings."),
-                    )
+                    column.child(self.panel_placeholder(placement, cx))
                 })
                 .children(view),
         )

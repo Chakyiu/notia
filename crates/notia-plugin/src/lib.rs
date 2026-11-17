@@ -125,12 +125,34 @@ impl Notia {
 /// Opens `vault` and sets up settings, the plugin host and the shared
 /// models. Plugins are registered afterwards with [`PluginHost::register`].
 pub fn init(vault: notia_core::Vault, cx: &mut App) {
+    load_vault_config(&vault, cx);
+    PluginHost::init(vault.config_dir().join("plugins.json"), cx);
+    install_models(vault, cx);
+}
+
+/// Swaps in `vault` after the previous one has been saved. Enabled plugins
+/// are suspended first so their cleanup runs, then the host is emptied for
+/// a fresh registration against the new folder.
+pub fn replace_vault(vault: notia_core::Vault, cx: &mut App) {
+    load_vault_config(&vault, cx);
+    let plugins = vault.config_dir().join("plugins.json");
+    if cx.has_global::<PluginHost>() {
+        PluginHost::suspend(cx);
+        PluginHost::reset(plugins, cx);
+    } else {
+        PluginHost::init(plugins, cx);
+    }
+    install_models(vault, cx);
+}
+
+fn load_vault_config(vault: &notia_core::Vault, cx: &mut App) {
     let config_dir = vault.config_dir();
     notia_theme::ThemeCatalog::load_appearance(config_dir.join("appearance.json"), cx);
     notia_theme::ThemeCatalog::watch_folder(config_dir.join("themes"), cx);
     AppSettings::load(config_dir.join("app.json"), cx);
-    PluginHost::init(config_dir.join("plugins.json"), cx);
+}
 
+fn install_models(vault: notia_core::Vault, cx: &mut App) {
     let vault = cx.new(|cx| VaultModel::new(vault, cx));
     let workspace = cx.new(|_| WorkspaceModel::default());
     cx.set_global(Notia { vault, workspace });

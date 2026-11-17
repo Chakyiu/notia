@@ -1,5 +1,6 @@
 /target
 /dist
+/third_party/gpui-component
 .DS_Store
 /dev
 docker/sync/.env

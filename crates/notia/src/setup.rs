@@ -1,13 +1,13 @@
 //! The first-run window, and the app-level file that remembers the vault.
 
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
 };
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, Sizable as _, TitleBar,
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _, TitleBar, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
@@ -63,15 +63,130 @@ fn window_options(cx: &App) -> WindowOptions {
     }
 }
 
-/// The vault opened last time, when that folder is still there.
+/// The vault Notia opens on launch: the default, or the one opened last time.
 pub fn remembered_vault() -> Option<PathBuf> {
-    let path = read_vault(&config_file())?;
-    path.is_dir().then_some(path)
+    startup_vault(&config_file())
+}
+
+/// The vault chosen as the default, when that folder is still there.
+pub(crate) fn default_vault() -> Option<PathBuf> {
+    default_in(&config_file())
+}
+
+/// Makes `vault` the one Notia opens on the next launch. The vault that is
+/// open now stays open.
+pub(crate) fn set_default_vault(vault: &Path) {
+    if let Err(error) = set_default_in(&config_file(), vault) {
+        log::error!("could not save the default vault: {error}");
+    }
+}
+
+/// Vaults opened before, most recent first, skipping folders that are gone.
+pub(crate) fn known_vaults() -> Vec<PathBuf> {
+    known_in(&config_file())
 }
 
 pub(crate) fn remember(vault: &Path) {
-    if let Err(error) = write_vault(&config_file(), vault) {
+    if let Err(error) = remember_in(&config_file(), vault) {
         log::error!("could not remember the vault: {error}");
+    }
+}
+
+/// Drops `vault` from the list. The one that is open stays, so the next
+/// launch still has a folder to open.
+pub(crate) fn forget_vault(vault: &Path) {
+    if let Err(error) = forget_in(&config_file(), vault) {
+        log::error!("could not forget the vault: {error}");
+    }
+}
+
+/// Asks for a folder and opens it as the vault.
+pub(crate) fn pick_vault(cx: &mut App) {
+    if gpui_kit::is_mobile() {
+        notify(
+            "This device keeps its vault in the app's folder.".to_string(),
+            cx,
+        );
+        return;
+    }
+    if cx.has_global::<VaultPick>() {
+        return;
+    }
+    let start = cx
+        .try_global::<notia_plugin::Notia>()
+        .and_then(|_| {
+            notia_plugin::Notia::vault(cx)
+                .read(cx)
+                .vault()
+                .root()
+                .parent()
+                .map(|path| path.to_path_buf())
+        })
+        .filter(|path| path.is_dir())
+        .unwrap_or_else(home_dir);
+    let previous = std::env::current_dir().ok();
+    if start.is_dir() {
+        // The panel opens in the process directory the first time. Point it
+        // at the vault's parent instead of the folder the app was launched from.
+        let _ = std::env::set_current_dir(&start);
+    }
+    let receiver = cx.prompt_for_paths(PathPromptOptions {
+        files: false,
+        directories: true,
+        multiple: false,
+        prompt: Some("Open a vault folder".into()),
+    });
+    let task = cx.spawn(async move |cx| {
+        let picked = match receiver.await {
+            Ok(Ok(Some(mut paths))) => paths.pop(),
+            Ok(Err(error)) => {
+                restore_dir(previous);
+                _ = cx.update(|cx| {
+                    finish_pick(cx);
+                    notify(format!("Could not open the folder picker: {error}"), cx);
+                });
+                return;
+            }
+            _ => None,
+        };
+        restore_dir(previous);
+        _ = cx.update(|cx| {
+            finish_pick(cx);
+            if let Some(path) = picked.filter(|path| path.is_dir())
+                && let Err(error) = crate::switch_to(path, cx)
+            {
+                notify(error, cx);
+            }
+        });
+    });
+    cx.set_global(VaultPick { _task: task });
+}
+
+/// Holds the folder-picker task so it is not cancelled when `pick_vault` returns.
+struct VaultPick {
+    _task: Task<()>,
+}
+
+impl Global for VaultPick {}
+
+fn finish_pick(cx: &mut App) {
+    // Dropping the task from inside it would cancel the rest of this update.
+    cx.defer(|cx| {
+        if cx.has_global::<VaultPick>() {
+            cx.remove_global::<VaultPick>();
+        }
+    });
+}
+
+fn notify(message: String, cx: &mut App) {
+    let Some(window) = cx.active_window() else {
+        log::error!("{message}");
+        return;
+    };
+    if let Err(error) = window.update(cx, |_, window, cx| {
+        window.push_notification(message, cx);
+    }) {
+        log::error!("{error:#}");
     }
 }
 
@@ -117,15 +232,148 @@ fn app_config_dir() -> PathBuf {
     }
 }
 
-fn read_vault(file: &Path) -> Option<PathBuf> {
-    let text = fs::read_to_string(file).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let path = value.get("vault")?.as_str()?;
-    if path.is_empty() {
-        None
+fn read_config(file: &Path) -> serde_json::Value {
+    let value = fs::read_to_string(file)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if value.is_object() {
+        value
     } else {
-        Some(PathBuf::from(path))
+        serde_json::json!({})
     }
+}
+
+fn write_config(file: &Path, value: &serde_json::Value) -> io::Result<()> {
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let json = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
+    fs::write(file, json)
+}
+
+fn push_path(paths: &mut Vec<PathBuf>, text: &str) {
+    if text.is_empty() || paths.iter().any(|path| path.as_os_str() == text) {
+        return;
+    }
+    paths.push(PathBuf::from(text));
+}
+
+fn config_paths(value: &serde_json::Value) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(vault) = value.get("vault").and_then(|vault| vault.as_str()) {
+        push_path(&mut paths, vault);
+    }
+    if let Some(vaults) = value.get("vaults").and_then(|vaults| vaults.as_array()) {
+        for vault in vaults {
+            if let Some(vault) = vault.as_str() {
+                push_path(&mut paths, vault);
+            }
+        }
+    }
+    paths
+}
+
+fn known_in(file: &Path) -> Vec<PathBuf> {
+    config_paths(&read_config(file))
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
+fn existing_dir(path: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(path);
+    path.is_dir().then_some(path)
+}
+
+fn default_in(file: &Path) -> Option<PathBuf> {
+    read_config(file)
+        .get("default")
+        .and_then(|vault| vault.as_str())
+        .and_then(existing_dir)
+}
+
+/// The default vault when its folder is still there, otherwise the last one.
+fn startup_vault(file: &Path) -> Option<PathBuf> {
+    if let Some(path) = default_in(file) {
+        return Some(path);
+    }
+    read_config(file)
+        .get("vault")
+        .and_then(|vault| vault.as_str())
+        .and_then(existing_dir)
+}
+
+fn remember_in(file: &Path, vault: &Path) -> io::Result<()> {
+    let mut value = read_config(file);
+    let text = vault.to_string_lossy().into_owned();
+    let mut vaults = Vec::new();
+    push_path(&mut vaults, &text);
+    if let Some(list) = value.get("vaults").and_then(|vaults| vaults.as_array()) {
+        for entry in list {
+            if let Some(entry) = entry.as_str() {
+                push_path(&mut vaults, entry);
+            }
+        }
+    }
+    if let Some(previous) = value.get("vault").and_then(|vault| vault.as_str()) {
+        push_path(&mut vaults, previous);
+    }
+    vaults.truncate(20);
+    value["vault"] = serde_json::Value::String(text);
+    value["vaults"] = serde_json::Value::Array(
+        vaults
+            .iter()
+            .map(|path| serde_json::Value::String(path.to_string_lossy().into_owned()))
+            .collect(),
+    );
+    write_config(file, &value)
+}
+
+fn set_default_in(file: &Path, vault: &Path) -> io::Result<()> {
+    let mut value = read_config(file);
+    let text = vault.to_string_lossy().into_owned();
+    let mut vaults = Vec::new();
+    if let Some(list) = value.get("vaults").and_then(|vaults| vaults.as_array()) {
+        for entry in list {
+            if let Some(entry) = entry.as_str() {
+                push_path(&mut vaults, entry);
+            }
+        }
+    }
+    if let Some(previous) = value.get("vault").and_then(|vault| vault.as_str()) {
+        push_path(&mut vaults, previous);
+    }
+    push_path(&mut vaults, &text);
+    vaults.truncate(20);
+    value["default"] = serde_json::Value::String(text);
+    value["vaults"] = serde_json::Value::Array(
+        vaults
+            .iter()
+            .map(|path| serde_json::Value::String(path.to_string_lossy().into_owned()))
+            .collect(),
+    );
+    write_config(file, &value)
+}
+
+fn forget_in(file: &Path, vault: &Path) -> io::Result<()> {
+    let mut value = read_config(file);
+    let text = vault.to_string_lossy();
+    if value.get("vault").and_then(|vault| vault.as_str()) == Some(text.as_ref()) {
+        return Ok(());
+    }
+    if let Some(list) = value
+        .get_mut("vaults")
+        .and_then(|vaults| vaults.as_array_mut())
+    {
+        list.retain(|entry| entry.as_str() != Some(text.as_ref()));
+    }
+    if value.get("default").and_then(|vault| vault.as_str()) == Some(text.as_ref())
+        && let Some(object) = value.as_object_mut()
+    {
+        object.remove("default");
+    }
+    write_config(file, &value)
 }
 
 /// Where a new vault is created unless the user picks another folder.
@@ -151,17 +399,6 @@ fn restore_dir(previous: Option<PathBuf>) {
     if let Some(path) = previous {
         let _ = std::env::set_current_dir(path);
     }
-}
-
-fn write_vault(file: &Path, vault: &Path) -> std::io::Result<()> {
-    if let Some(dir) = file.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let json = serde_json::to_string_pretty(&serde_json::json!({
-        "vault": vault.to_string_lossy(),
-    }))
-    .map_err(std::io::Error::other)?;
-    fs::write(file, json)
 }
 
 struct Setup {
@@ -415,16 +652,68 @@ impl Render for Setup {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{home_dir, read_vault, vault_name, write_vault};
+    use std::fs;
+
+    use super::{
+        forget_in, home_dir, known_in, read_config, remember_in, set_default_in, startup_vault,
+        vault_name,
+    };
 
     #[test]
     fn remembers_a_vault_path() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.json");
         let vault = dir.path().join("Notes");
-        write_vault(&file, &vault).unwrap();
-        assert_eq!(read_vault(&file), Some(vault));
-        assert_eq!(read_vault(&dir.path().join("missing.json")), None);
+        fs::create_dir(&vault).unwrap();
+        remember_in(&file, &vault).unwrap();
+        let stored = read_config(&file);
+        assert_eq!(
+            stored.get("vault").and_then(|vault| vault.as_str()),
+            Some(vault.to_str().unwrap())
+        );
+        assert_eq!(known_in(&file), vec![vault]);
+        assert!(known_in(&dir.path().join("missing.json")).is_empty());
+    }
+
+    #[test]
+    fn remembers_several_vaults_and_keeps_the_open_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.json");
+        let first = dir.path().join("Notes");
+        let second = dir.path().join("Work");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        remember_in(&file, &first).unwrap();
+        remember_in(&file, &second).unwrap();
+        assert_eq!(known_in(&file), vec![second.clone(), first.clone()]);
+        forget_in(&file, &first).unwrap();
+        assert_eq!(known_in(&file), vec![second.clone()]);
+        forget_in(&file, &second).unwrap();
+        assert_eq!(known_in(&file), vec![second]);
+    }
+
+    #[test]
+    fn the_default_vault_opens_on_the_next_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.json");
+        let first = dir.path().join("Notes");
+        let second = dir.path().join("Work");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        remember_in(&file, &first).unwrap();
+        remember_in(&file, &second).unwrap();
+        assert_eq!(startup_vault(&file), Some(second.clone()));
+        set_default_in(&file, &first).unwrap();
+        assert_eq!(startup_vault(&file), Some(first.clone()));
+        assert_eq!(
+            read_config(&file)
+                .get("vault")
+                .and_then(|vault| vault.as_str()),
+            Some(second.to_str().unwrap())
+        );
+        forget_in(&file, &first).unwrap();
+        assert_eq!(startup_vault(&file), Some(second));
+        assert!(read_config(&file).get("default").is_none());
     }
 
     #[test]

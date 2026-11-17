@@ -264,6 +264,33 @@ impl PluginHost {
         }
     }
 
+    /// Runs every enabled plugin's cleanup without changing the saved choices.
+    /// Used when the open vault is replaced and plugins are registered again.
+    pub(crate) fn suspend(cx: &mut App) {
+        let ids: Vec<SharedString> = Self::global(cx)
+            .registrations
+            .iter()
+            .filter(|registration| registration.activation.is_some())
+            .map(|registration| registration.manifest.id().clone())
+            .collect();
+        for id in ids {
+            Self::deactivate(&id, cx);
+        }
+    }
+
+    /// Drops every registration and loads `config_path`, keeping keybindings
+    /// that were already installed. GPUI cannot remove a binding, so a second
+    /// copy would run the command twice.
+    pub(crate) fn reset(config_path: PathBuf, cx: &mut App) {
+        let bound_keys = Self::global(cx).bound_keys.clone();
+        cx.set_global(Self {
+            registrations: Vec::new(),
+            choices: crate::read_json(&config_path),
+            config_path,
+            bound_keys,
+        });
+    }
+
     fn deactivate(id: &SharedString, cx: &mut App) {
         let host = cx.global_mut::<Self>();
         let activation = host.position(id).and_then(|ix| {

@@ -1,16 +1,17 @@
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
+    rc::Rc,
     time::Duration,
 };
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, ThemeMode,
-    TitleBar, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _, ThemeMode, TitleBar, WindowExt as _,
     button::{Button, ButtonVariants as _},
     command::CommandState,
     h_flex,
     kbd::Kbd,
+    menu::ContextMenuExt as _,
     resizable::{HandleEdge, resize_handle},
     status_bar::StatusBar,
     tab::{Tab, TabBar},
@@ -19,7 +20,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use notia_plugin::{
     ActiveNote, AppSettings, EditorCommand, EditorId, Notia, OpenOptions, Panel, PanelPlacement,
-    PluginHost, VaultEvent, VaultModel, ViewMode, WorkspaceModel,
+    PluginHost, RibbonItem, VaultEvent, VaultModel, ViewMode, WorkspaceModel,
     actions::{NewNote, OpenQuickSwitcher, OpenSettings, WORKSPACE_CONTEXT},
     core::VaultPath,
     theme::{ColorScheme, ThemeCatalog},
@@ -30,6 +31,9 @@ use crate::note_editor::{NoteEditor, NoteEditorEvent};
 
 #[path = "phone.rs"]
 mod phone;
+
+#[path = "nav.rs"]
+mod nav;
 
 use phone::PhoneScreen;
 
@@ -45,6 +49,10 @@ struct SidebarLayout {
     open: bool,
     width: f32,
     active: Option<String>,
+    #[serde(default)]
+    order: Vec<String>,
+    #[serde(default)]
+    hidden: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,6 +60,8 @@ struct SidebarLayout {
 struct Layout {
     left: SidebarLayout,
     right: SidebarLayout,
+    #[serde(default)]
+    ribbon: nav::RibbonLayout,
     tabs: Vec<VaultPath>,
     active_tab: Option<usize>,
     recent: Vec<VaultPath>,
@@ -63,6 +73,8 @@ impl Default for SidebarLayout {
             open: true,
             width: 260.,
             active: None,
+            order: Vec::new(),
+            hidden: Vec::new(),
         }
     }
 }
@@ -75,6 +87,7 @@ impl Default for Layout {
                 width: 280.,
                 ..SidebarLayout::default()
             },
+            ribbon: nav::RibbonLayout::default(),
             tabs: Vec::new(),
             active_tab: None,
             recent: Vec::new(),
@@ -90,6 +103,8 @@ pub(crate) struct Sidebar {
     /// community plugins load after the window opens, or no longer, after
     /// its plugin was disabled; the sidebar shows it whenever it exists.
     chosen: Option<SharedString>,
+    order: Vec<String>,
+    hidden: Vec<String>,
 }
 
 impl Sidebar {
@@ -100,6 +115,8 @@ impl Sidebar {
             width: clamp_width(px(layout.width)),
             chosen: active.clone(),
             active,
+            order: layout.order.clone(),
+            hidden: layout.hidden.clone(),
         }
     }
 
@@ -112,8 +129,27 @@ impl Sidebar {
                 .as_ref()
                 .or(self.active.as_ref())
                 .map(ToString::to_string),
+            order: self.order.clone(),
+            hidden: self.hidden.clone(),
         }
     }
+}
+
+#[derive(Clone)]
+struct RibbonEntry {
+    id: SharedString,
+    label: SharedString,
+    tooltip: SharedString,
+    icon: Icon,
+    enabled: bool,
+    kind: RibbonKind,
+}
+
+#[derive(Clone)]
+enum RibbonKind {
+    Plugin(RibbonItem),
+    Theme,
+    Settings,
 }
 
 /// The drag payload of a sidebar's resize handle.
@@ -157,6 +193,10 @@ pub struct Workspace {
     pub(crate) switcher_matches: Vec<crate::palette::SwitcherMatch>,
     layout_path: PathBuf,
     save_layout: Option<Task<()>>,
+    ribbon: nav::RibbonLayout,
+    /// The icon under the pointer during a nav drag, and which icon is held.
+    nav_drop: Option<nav::NavDrop>,
+    nav_dragging: Option<SharedString>,
     /// Which full-screen page a phone shows. A wide window ignores it.
     phone: PhoneScreen,
     _subscriptions: Vec<Subscription>,
@@ -217,6 +257,9 @@ impl Workspace {
             switcher_matches: Vec::new(),
             layout_path,
             save_layout: None,
+            ribbon: layout.ribbon,
+            nav_drop: None,
+            nav_dragging: None,
             phone: PhoneScreen::Browse,
             _subscriptions: subscriptions,
         };
@@ -299,25 +342,9 @@ impl Workspace {
             })
             .collect();
 
-        for placement in [PanelPlacement::Left, PanelPlacement::Right] {
-            let exists = |id: &SharedString| {
-                panels
-                    .iter()
-                    .any(|panel| panel.id() == id && panel.placement() == placement)
-            };
-            let first = panels
-                .iter()
-                .find(|panel| panel.placement() == placement)
-                .map(|panel| panel.id().clone());
-            let sidebar = self.sidebar_mut(placement);
-            sidebar.active = sidebar
-                .chosen
-                .clone()
-                .filter(exists)
-                .or_else(|| sidebar.active.clone().filter(exists))
-                .or(first);
-        }
         self.panels = panels;
+        self.refresh_panel(PanelPlacement::Left);
+        self.refresh_panel(PanelPlacement::Right);
         self.attach_toolbars(cx);
     }
 
@@ -646,6 +673,14 @@ impl Workspace {
         }
     }
 
+    pub(crate) fn persist(&mut self, cx: &mut Context<Self>) {
+        self.save_all(cx);
+        // Drop the delayed write. It would otherwise land after the vault
+        // has changed and record this window against the new folder.
+        self.save_layout.take();
+        self.save_layout_now(cx);
+    }
+
     fn save_all(&mut self, cx: &mut Context<Self>) {
         for tab in &self.tabs {
             tab.editor.update(cx, |editor, cx| editor.save(cx));
@@ -730,14 +765,20 @@ impl Workspace {
     }
 
     pub(crate) fn show_panel(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(panel) = self.panels.iter().find(|panel| panel.id().as_ref() == id) else {
+        let found = self
+            .panels
+            .iter()
+            .find(|panel| panel.id().as_ref() == id)
+            .map(|panel| (panel.placement(), panel.id().clone()));
+        let Some((placement, id)) = found else {
             return;
         };
         // Editor toolbars are already above the note.
-        if panel.placement() == PanelPlacement::Editor {
+        if placement == PanelPlacement::Editor {
             return;
         }
-        let (placement, id) = (panel.placement(), panel.id().clone());
+        // A command that opens a panel the user had hidden puts the icon back.
+        nav::unhide(&mut self.sidebar_mut(placement).hidden, id.as_ref());
         self.select_panel(placement, id, cx);
     }
 
@@ -792,6 +833,7 @@ impl Workspace {
         let layout = Layout {
             left: self.left.to_layout(),
             right: self.right.to_layout(),
+            ribbon: self.ribbon.clone(),
             tabs: self
                 .tabs
                 .iter()
@@ -916,29 +958,338 @@ impl Workspace {
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_sidebar(placement, cx)))
     }
 
+    fn refresh_panel(&mut self, placement: PanelPlacement) {
+        let known: Vec<SharedString> = self
+            .panels
+            .iter()
+            .filter(|panel| panel.placement() == placement)
+            .map(|panel| panel.id().clone())
+            .collect();
+        let ids: Vec<String> = known.iter().map(ToString::to_string).collect();
+        let order = self.sidebar(placement).order.clone();
+        let hidden = self.sidebar(placement).hidden.clone();
+        let visible = nav::visible_ids(&ids, &order, &hidden);
+        let is_visible = |id: &SharedString| visible.iter().any(|item| item == id.as_ref());
+        let exists = |id: &SharedString| known.iter().any(|item| item == id);
+        let sidebar = self.sidebar_mut(placement);
+        // A hidden panel was turned off on purpose. A missing one may still
+        // be loading with its plugin, so that choice is kept.
+        if sidebar
+            .chosen
+            .as_ref()
+            .is_some_and(|id| exists(id) && !is_visible(id))
+        {
+            sidebar.chosen = visible.first().map(|id| SharedString::from(id.as_str()));
+        }
+        sidebar.active = sidebar
+            .chosen
+            .clone()
+            .filter(|id| is_visible(id))
+            .or_else(|| sidebar.active.clone().filter(|id| is_visible(id)))
+            .or_else(|| visible.first().map(|id| SharedString::from(id.as_str())));
+    }
+
+    fn panel_ids(&self, placement: PanelPlacement) -> Vec<String> {
+        self.panels
+            .iter()
+            .filter(|panel| panel.placement() == placement)
+            .map(|panel| panel.id().to_string())
+            .collect()
+    }
+
+    fn move_panel(&mut self, placement: PanelPlacement, id: &str, slot: &nav::Slot) -> bool {
+        let available = self.panel_ids(placement);
+        let hidden = self.sidebar(placement).hidden.clone();
+        nav::move_linear(
+            &mut self.sidebar_mut(placement).order,
+            &available,
+            &hidden,
+            id,
+            slot,
+        )
+    }
+
+    fn apply_nav_move(&mut self, id: &str, target: &nav::NavDrop, cx: &App) -> bool {
+        match target.bar {
+            nav::NavBar::RibbonTop | nav::NavBar::RibbonBottom => nav::move_ribbon(
+                &mut self.ribbon,
+                &ribbon_available(cx),
+                id,
+                target.bar,
+                &target.slot,
+            ),
+            nav::NavBar::Left => self.move_panel(PanelPlacement::Left, id, &target.slot),
+            nav::NavBar::Right => self.move_panel(PanelPlacement::Right, id, &target.slot),
+        }
+    }
+
+    fn hover_nav(
+        &mut self,
+        event: &DragMoveEvent<nav::NavDrag>,
+        bar: nav::NavBar,
+        target: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.bounds.contains(&event.event.position) {
+            return;
+        }
+        let drag = event.drag(cx).clone();
+        if !nav::same_menu(drag.bar, bar) {
+            return;
+        }
+        if target.as_ref().is_some_and(|id| id == &drag.id) {
+            self.clear_nav_drop(cx);
+            return;
+        }
+        let after = if bar.horizontal() {
+            let mid = event.bounds.left().as_f32() + event.bounds.size.width.as_f32() * 0.5;
+            event.event.position.x.as_f32() > mid
+        } else {
+            let mid = event.bounds.top().as_f32() + event.bounds.size.height.as_f32() * 0.5;
+            event.event.position.y.as_f32() > mid
+        };
+        let slot = match target {
+            Some(id) if after => nav::Slot::After(id.to_string()),
+            Some(id) => nav::Slot::Before(id.to_string()),
+            None => nav::Slot::End,
+        };
+        let next = nav::NavDrop { bar, slot };
+        if self.nav_drop.as_ref() != Some(&next) {
+            self.nav_drop = Some(next);
+            cx.notify();
+        }
+    }
+
+    fn clear_nav_drop(&mut self, cx: &mut Context<Self>) {
+        if self.nav_drop.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn drop_nav(&mut self, drag: &nav::NavDrag, expected: nav::NavBar, cx: &mut Context<Self>) {
+        let Some(target) = self.nav_drop.take() else {
+            cx.notify();
+            return;
+        };
+        if target.bar == expected && nav::same_menu(drag.bar, target.bar) {
+            let id = drag.id.to_string();
+            if self.apply_nav_move(&id, &target, cx) {
+                self.schedule_layout_save(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn toggle_ribbon(&mut self, id: &str, cx: &mut Context<Self>) {
+        nav::toggle_hidden(&mut self.ribbon.hidden, id);
+        self.schedule_layout_save(cx);
+        cx.notify();
+    }
+
+    fn toggle_panel(&mut self, placement: PanelPlacement, id: &str, cx: &mut Context<Self>) {
+        nav::toggle_hidden(&mut self.sidebar_mut(placement).hidden, id);
+        self.refresh_panel(placement);
+        self.schedule_layout_save(cx);
+        cx.notify();
+    }
+
+    fn nav_button(
+        &self,
+        bar: nav::NavBar,
+        id: SharedString,
+        icon: Icon,
+        tooltip: SharedString,
+        selected: bool,
+        disabled: bool,
+        compact: bool,
+        on_click: impl Fn(&mut Window, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mark_after = self.nav_drop.as_ref().and_then(|drop| {
+            if drop.bar != bar {
+                return None;
+            }
+            match &drop.slot {
+                nav::Slot::Before(target) if target.as_str() == id.as_ref() => Some(false),
+                nav::Slot::After(target) if target.as_str() == id.as_ref() => Some(true),
+                _ => None,
+            }
+        });
+        let dimmed = self.nav_dragging.as_ref() == Some(&id);
+        let drag = nav::NavDrag {
+            bar,
+            id: id.clone(),
+            icon: icon.clone(),
+        };
+        let workspace = cx.weak_entity();
+        let target = id.clone();
+        let element_id = SharedString::from(format!("nav-{}-{id}", bar.tag()));
+        let on_move = cx.listener(move |this, event: &DragMoveEvent<nav::NavDrag>, _, cx| {
+            this.hover_nav(event, bar, Some(target.clone()), cx);
+        });
+        let on_drop = cx.listener(move |this, drag: &nav::NavDrag, _, cx| {
+            this.drop_nav(drag, bar, cx);
+        });
+        nav::icon_button(
+            nav::IconSpec {
+                element_id: element_id.into(),
+                icon,
+                tooltip,
+                selected,
+                disabled,
+                compact,
+                dimmed,
+                horizontal: bar.horizontal(),
+                mark_after,
+                drag,
+            },
+            on_click,
+            move |drag, cx| {
+                let Some(workspace) = workspace.upgrade() else {
+                    return;
+                };
+                let dragging = drag.id.clone();
+                // The drag is installed after this returns, and the window
+                // redraws then. Notifying here would render before that and
+                // clear the held icon.
+                workspace.update(cx, |this, _| {
+                    this.nav_dragging = Some(dragging);
+                });
+            },
+            on_move,
+            on_drop,
+            cx,
+        )
+    }
+
+    fn panel_rows(&self, placement: PanelPlacement) -> Vec<nav::MenuRow> {
+        let panels: Vec<&Panel> = self
+            .panels
+            .iter()
+            .filter(|panel| panel.placement() == placement)
+            .collect();
+        let ids: Vec<String> = panels.iter().map(|panel| panel.id().to_string()).collect();
+        let sidebar = self.sidebar(placement);
+        let visible = nav::visible_ids(&ids, &sidebar.order, &sidebar.hidden);
+        let mut rows = Vec::new();
+        for id in &visible {
+            let Some(panel) = panels
+                .iter()
+                .find(|panel| panel.id().as_ref() == id.as_str())
+            else {
+                continue;
+            };
+            rows.push(nav::MenuRow {
+                id: panel.id().clone(),
+                label: panel.title().clone(),
+                icon: panel.icon().clone(),
+                visible: true,
+            });
+        }
+        for panel in &panels {
+            if visible.iter().any(|id| id.as_str() == panel.id().as_ref()) {
+                continue;
+            }
+            rows.push(nav::MenuRow {
+                id: panel.id().clone(),
+                label: panel.title().clone(),
+                icon: panel.icon().clone(),
+                visible: false,
+            });
+        }
+        rows
+    }
+
+    fn panel_placeholder(&self, placement: PanelPlacement, cx: &App) -> Div {
+        let any = self
+            .panels
+            .iter()
+            .any(|panel| panel.placement() == placement);
+        let message = if any {
+            "Right-click the header to choose a panel."
+        } else {
+            "No panel is turned on. Enable one in Settings."
+        };
+        div()
+            .p_4()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(message)
+    }
+
     fn render_panel_switcher(
         &self,
         placement: PanelPlacement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let bar = match placement {
+            PanelPlacement::Left => nav::NavBar::Left,
+            PanelPlacement::Right => nav::NavBar::Right,
+            PanelPlacement::Editor => panic!("an editor toolbar is not a sidebar"),
+        };
         let active = self.sidebar(placement).active.clone();
-        h_flex().gap_0p5().items_center().children(
-            self.panels
+        let ids = {
+            let sidebar = self.sidebar(placement);
+            nav::visible_ids(&self.panel_ids(placement), &sidebar.order, &sidebar.hidden)
+        };
+        let panels: Vec<(SharedString, Icon, SharedString)> = self
+            .panels
+            .iter()
+            .filter(|panel| panel.placement() == placement)
+            .map(|panel| {
+                (
+                    panel.id().clone(),
+                    panel.icon().clone(),
+                    panel.title().clone(),
+                )
+            })
+            .collect();
+        let workspace = cx.entity();
+        let mut icons = Vec::new();
+        for id in ids {
+            let Some((panel_id, icon, title)) = panels
                 .iter()
-                .filter(|panel| panel.placement() == placement)
-                .map(|panel| {
-                    let id = panel.id().clone();
-                    Button::new(SharedString::from(format!("panel-{id}")))
-                        .icon(panel.icon().clone())
-                        .ghost()
-                        .small()
-                        .selected(active.as_ref() == Some(&id))
-                        .tooltip(panel.title().clone())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_panel(placement, id.clone(), cx);
-                        }))
-                }),
-        )
+                .find(|(panel_id, _, _)| panel_id.as_ref() == id.as_str())
+                .map(|(panel_id, icon, title)| (panel_id.clone(), icon.clone(), title.clone()))
+            else {
+                continue;
+            };
+            let selected = active.as_ref() == Some(&panel_id);
+            let owner = workspace.clone();
+            let clicked = panel_id.clone();
+            icons.push(
+                self.nav_button(
+                    bar,
+                    panel_id,
+                    icon,
+                    title,
+                    selected,
+                    false,
+                    true,
+                    move |_, app| {
+                        owner.update(app, |this, cx| {
+                            this.select_panel(placement, clicked.clone(), cx);
+                        });
+                    },
+                    cx,
+                )
+                .into_any_element(),
+            );
+        }
+        let rows = self.panel_rows(placement);
+        let toggle: Rc<dyn Fn(&str, &mut App)> = Rc::new(move |id, app| {
+            let id = id.to_string();
+            workspace.update(app, |this, cx| this.toggle_panel(placement, &id, cx));
+        });
+        h_flex()
+            .id(("panel-switcher", placement as usize))
+            .gap_0p5()
+            .items_center()
+            .min_h(px(28.))
+            .children(icons)
+            .context_menu(move |menu, _, _| {
+                nav::visibility_menu(menu, rows.clone(), toggle.clone())
+            })
     }
 
     fn render_tab_strip(&self, traffic_lights: bool, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1015,20 +1366,45 @@ impl Workspace {
     }
 
     fn render_ribbon(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let is_dark = theme.is_dark();
-        let (sidebar_bg, sidebar_border) = (theme.sidebar, theme.sidebar_border);
-        let items = PluginHost::global(cx).ribbon_items();
-        let switchable = ThemeCatalog::global(cx)
-            .active_pack()
-            .is_none_or(|pack| pack.has_mode(ThemeMode::Light) && pack.has_mode(ThemeMode::Dark));
-        let scheme_tooltip = match (switchable, is_dark) {
-            (false, _) => "This theme has a single appearance",
-            (true, true) => "Use light mode",
-            (true, false) => "Use dark mode",
+        let (sidebar_bg, sidebar_border, marker) = {
+            let theme = cx.theme();
+            (theme.sidebar, theme.sidebar_border, theme.drag_border)
         };
+        let is_dark = cx.theme().is_dark();
+        let entries = ribbon_entries(cx);
+        let ids: Vec<String> = entries.iter().map(|entry| entry.id.to_string()).collect();
+        let (top, bottom) = nav::ribbon_zones(&ids, &self.ribbon);
+        let rows = menu_rows(&entries, &top, &bottom);
+        let workspace = cx.entity();
+        let toggle: Rc<dyn Fn(&str, &mut App)> = Rc::new(move |id, app| {
+            let id = id.to_string();
+            workspace.update(app, |this, cx| this.toggle_ribbon(&id, cx));
+        });
+        let gap_marked = self.nav_drop.as_ref().is_some_and(|drop| {
+            drop.bar == nav::NavBar::RibbonTop && matches!(drop.slot, nav::Slot::End)
+        });
+
+        let mut above = Vec::new();
+        for id in &top {
+            if let Some(entry) = entries
+                .iter()
+                .find(|entry| entry.id.as_ref() == id.as_str())
+            {
+                above.push(self.ribbon_icon(nav::NavBar::RibbonTop, entry, is_dark, cx));
+            }
+        }
+        let mut below = Vec::new();
+        for id in &bottom {
+            if let Some(entry) = entries
+                .iter()
+                .find(|entry| entry.id.as_ref() == id.as_str())
+            {
+                below.push(self.ribbon_icon(nav::NavBar::RibbonBottom, entry, is_dark, cx));
+            }
+        }
 
         v_flex()
+            .id("ribbon")
             .flex_none()
             .w(RIBBON_WIDTH)
             .h_full()
@@ -1038,41 +1414,64 @@ impl Workspace {
             .bg(sidebar_bg)
             .border_r_1()
             .border_color(sidebar_border)
-            .children(items.into_iter().map(|item| {
-                Button::new(SharedString::from(format!("ribbon-{}", item.id())))
-                    .icon(item.icon().clone())
-                    .ghost()
-                    .tooltip(item.tooltip().clone())
-                    .on_click(move |_, window, cx| item.run(window, cx))
+            .children(above)
+            .child(self.ribbon_gap(gap_marked, marker, cx))
+            .children(below)
+            .context_menu(move |menu, _, _| {
+                nav::visibility_menu(menu, rows.clone(), toggle.clone())
+            })
+    }
+
+    fn ribbon_icon(
+        &self,
+        bar: nav::NavBar,
+        entry: &RibbonEntry,
+        is_dark: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let kind = entry.kind.clone();
+        self.nav_button(
+            bar,
+            entry.id.clone(),
+            entry.icon.clone(),
+            entry.tooltip.clone(),
+            false,
+            !entry.enabled,
+            false,
+            move |window, cx| ribbon_action(kind.clone(), is_dark, window, cx),
+            cx,
+        )
+        .into_any_element()
+    }
+
+    /// The empty stretch between the top icons and the ones pinned to the
+    /// bottom. Dropping here moves an icon to the end of the top group.
+    fn ribbon_gap(&self, marked: bool, color: Hsla, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("ribbon-gap")
+            .flex_1()
+            .w_full()
+            .relative()
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<nav::NavDrag>, _, cx| {
+                    this.hover_nav(event, nav::NavBar::RibbonTop, None, cx);
+                }),
+            )
+            .on_drop(cx.listener(|this, drag: &nav::NavDrag, _, cx| {
+                this.drop_nav(drag, nav::NavBar::RibbonTop, cx);
             }))
-            .child(div().flex_1())
-            .child(
-                Button::new("ribbon-scheme")
-                    .icon(if is_dark {
-                        IconName::Sun
-                    } else {
-                        IconName::Moon
-                    })
-                    .ghost()
-                    .disabled(!switchable)
-                    .tooltip(scheme_tooltip)
-                    .on_click(move |_, _, cx| {
-                        ThemeCatalog::update_appearance(cx, |appearance| {
-                            appearance.scheme = if is_dark {
-                                ColorScheme::Light
-                            } else {
-                                ColorScheme::Dark
-                            };
-                        });
-                    }),
-            )
-            .child(
-                Button::new("ribbon-settings")
-                    .icon(IconName::Settings)
-                    .ghost()
-                    .tooltip("Settings")
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx)),
-            )
+            .when(marked, move |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top(px(0.))
+                        .left(px(10.))
+                        .right(px(10.))
+                        .h(px(2.))
+                        .rounded(px(1.))
+                        .bg(color),
+                )
+            })
     }
 
     fn render_sidebar(
@@ -1087,6 +1486,7 @@ impl Workspace {
             .as_ref()
             .and_then(|id| self.panel_views.get(id))
             .map(|(_, view)| view.clone());
+        let missing = view.is_none();
         let edge = match placement {
             PanelPlacement::Left => HandleEdge::Trailing,
             PanelPlacement::Right => HandleEdge::Leading,
@@ -1123,7 +1523,24 @@ impl Workspace {
                     cx.notify();
                 }),
             )
-            .child(v_flex().size_full().overflow_hidden().children(view))
+            .child(
+                v_flex()
+                    .size_full()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .children(view)
+                            .when(missing, |body| {
+                                body.child(self.panel_placeholder(placement, cx))
+                            }),
+                    )
+                    .when(placement == PanelPlacement::Left, |column| {
+                        column.child(crate::vaults::footer(cx))
+                    }),
+            )
             .child(
                 resize_handle(("sidebar-resize", placement as usize), Axis::Horizontal)
                     .inside(edge)
@@ -1185,6 +1602,109 @@ impl Workspace {
     }
 }
 
+fn ribbon_available(cx: &App) -> Vec<String> {
+    let mut ids: Vec<String> = PluginHost::global(cx)
+        .ribbon_items()
+        .iter()
+        .map(|item| item.id().to_string())
+        .collect();
+    ids.push(nav::THEME_ID.to_string());
+    ids.push(nav::SETTINGS_ID.to_string());
+    ids
+}
+
+fn ribbon_entries(cx: &App) -> Vec<RibbonEntry> {
+    let is_dark = cx.theme().is_dark();
+    let switchable = ThemeCatalog::global(cx)
+        .active_pack()
+        .is_none_or(|pack| pack.has_mode(ThemeMode::Light) && pack.has_mode(ThemeMode::Dark));
+    let mut entries: Vec<RibbonEntry> = PluginHost::global(cx)
+        .ribbon_items()
+        .into_iter()
+        .map(|item| RibbonEntry {
+            id: item.id().clone(),
+            label: item.tooltip().clone(),
+            tooltip: item.tooltip().clone(),
+            icon: item.icon().clone(),
+            enabled: true,
+            kind: RibbonKind::Plugin(item),
+        })
+        .collect();
+    let theme_tooltip = match (switchable, is_dark) {
+        (false, _) => "This theme has a single appearance",
+        (true, true) => "Use light mode",
+        (true, false) => "Use dark mode",
+    };
+    entries.push(RibbonEntry {
+        id: nav::THEME_ID.into(),
+        label: "Theme".into(),
+        tooltip: theme_tooltip.into(),
+        icon: Icon::new(if is_dark {
+            IconName::Sun
+        } else {
+            IconName::Moon
+        }),
+        enabled: switchable,
+        kind: RibbonKind::Theme,
+    });
+    entries.push(RibbonEntry {
+        id: nav::SETTINGS_ID.into(),
+        label: "Settings".into(),
+        tooltip: "Settings".into(),
+        icon: Icon::new(IconName::Settings),
+        enabled: true,
+        kind: RibbonKind::Settings,
+    });
+    entries
+}
+
+fn menu_row(entry: &RibbonEntry, visible: bool) -> nav::MenuRow {
+    nav::MenuRow {
+        id: entry.id.clone(),
+        label: entry.label.clone(),
+        icon: entry.icon.clone(),
+        visible,
+    }
+}
+
+fn menu_rows(entries: &[RibbonEntry], top: &[String], bottom: &[String]) -> Vec<nav::MenuRow> {
+    let mut rows = Vec::new();
+    for id in top.iter().chain(bottom) {
+        if let Some(entry) = entries
+            .iter()
+            .find(|entry| entry.id.as_ref() == id.as_str())
+        {
+            rows.push(menu_row(entry, true));
+        }
+    }
+    for entry in entries {
+        let shown = top
+            .iter()
+            .chain(bottom)
+            .any(|id| id.as_str() == entry.id.as_ref());
+        if !shown {
+            rows.push(menu_row(entry, false));
+        }
+    }
+    rows
+}
+
+fn ribbon_action(kind: RibbonKind, is_dark: bool, window: &mut Window, cx: &mut App) {
+    match kind {
+        RibbonKind::Plugin(item) => item.run(window, cx),
+        RibbonKind::Theme => {
+            ThemeCatalog::update_appearance(cx, |appearance| {
+                appearance.scheme = if is_dark {
+                    ColorScheme::Light
+                } else {
+                    ColorScheme::Dark
+                };
+            });
+        }
+        RibbonKind::Settings => window.dispatch_action(Box::new(OpenSettings), cx),
+    }
+}
+
 fn clamp_width(width: Pixels) -> Pixels {
     px(width
         .as_f32()
@@ -1204,6 +1724,29 @@ fn title_control(element: impl IntoElement) -> Div {
     stop_title_drag(element).h_full().flex().items_center()
 }
 
+#[cfg(test)]
+mod layout_tests {
+    use super::Layout;
+
+    #[test]
+    fn workspace_layout_without_nav_fields_still_loads() {
+        let json = r#"{
+            "left": {"open": true, "width": 260.0, "active": "file-explorer:files"},
+            "right": {"open": false, "width": 280.0},
+            "tabs": [],
+            "recent": []
+        }"#;
+        let layout: Layout = serde_json::from_str(json).unwrap();
+        assert!(layout.ribbon.leading.is_empty());
+        assert!(layout.ribbon.hidden.is_empty());
+        assert!(layout.left.order.is_empty());
+        assert!(layout.left.hidden.is_empty());
+        assert!(layout.right.hidden.is_empty());
+        assert_eq!(layout.left.active.as_deref(), Some("file-explorer:files"));
+        assert!(!layout.right.open);
+    }
+}
+
 impl Focusable for Workspace {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -1212,6 +1755,10 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !cx.has_active_drag() {
+            self.nav_drop = None;
+            self.nav_dragging = None;
+        }
         if gpui_kit::is_mobile() {
             self.render_phone(window, cx).into_any_element()
         } else {

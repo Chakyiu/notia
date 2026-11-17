@@ -13,7 +13,7 @@ use gpui_kit::*;
 use notia_plugin::{
     OpenOptions, PaletteCommand, PluginHost,
     actions::{
-        CloseTab, EditMode, HalfEditMode, NewCanvas, NewKanban, NewNote, NextTab,
+        CloseTab, EditMode, HalfEditMode, ManageVaults, NewCanvas, NewKanban, NewNote, NextTab,
         OpenCommandPalette, OpenQuickSwitcher, OpenSettings, PreviewMode, PreviousTab, SaveNote,
         ToggleLeftSidebar, ToggleReadingView, ToggleRightSidebar, WORKSPACE_CONTEXT,
     },
@@ -95,6 +95,11 @@ pub(crate) fn install(cx: &mut App) {
                 "Open settings",
                 Some("secondary-,"),
                 Some(Icon::new(IconName::Settings)),
+            ),
+            PaletteCommand::core::<ManageVaults>(
+                "Manage vault",
+                None,
+                Some(Icon::new(IconName::FolderOpen)),
             ),
             PaletteCommand::core::<NextTab>(
                 "Next tab",

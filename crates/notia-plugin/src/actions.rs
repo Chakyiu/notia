@@ -13,6 +13,8 @@ actions!(
         /// Jumps to a note by name.
         OpenQuickSwitcher,
         OpenSettings,
+        /// Opens the list of vaults so another one can be selected.
+        ManageVaults,
         NewNote,
         NewCanvas,
         NewKanban,

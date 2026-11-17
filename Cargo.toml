@@ -62,3 +62,7 @@ markdown = { opt-level = 3 }
 
 [profile.release]
 strip = "symbols"
+
+# Context menus in gpui-component 0.9.1 put only 4px between an icon and its label.
+[patch.crates-io]
+gpui-component = { path = "third_party/gpui-component" }

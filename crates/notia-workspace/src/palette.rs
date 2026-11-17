@@ -13,9 +13,9 @@ use gpui_kit::*;
 use notia_plugin::{
     OpenOptions, PaletteCommand, PluginHost,
     actions::{
-        CloseTab, EditMode, HalfEditMode, NewNote, NextTab, OpenCommandPalette, OpenQuickSwitcher,
-        OpenSettings, PreviewMode, PreviousTab, SaveNote, ToggleLeftSidebar, ToggleReadingView,
-        ToggleRightSidebar, WORKSPACE_CONTEXT,
+        CloseTab, EditMode, HalfEditMode, NewCanvas, NewNote, NextTab, OpenCommandPalette,
+        OpenQuickSwitcher, OpenSettings, PreviewMode, PreviousTab, SaveNote, ToggleLeftSidebar,
+        ToggleReadingView, ToggleRightSidebar, WORKSPACE_CONTEXT,
     },
     core::{VaultPath, fuzzy_score},
     hotkeys,
@@ -43,6 +43,11 @@ pub(crate) fn install(cx: &mut App) {
                 "Create new note",
                 Some("secondary-n"),
                 Some(Icon::new(IconName::Plus)),
+            ),
+            PaletteCommand::core::<NewCanvas>(
+                "Create new canvas",
+                None,
+                Some(Icon::new(Lucide::Frame)),
             ),
             PaletteCommand::core::<OpenQuickSwitcher>(
                 "Open quick switcher",

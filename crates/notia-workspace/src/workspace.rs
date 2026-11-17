@@ -397,7 +397,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !path.is_markdown() {
+        if !path.is_markdown() && !path.is_canvas() {
             let path = self.vault.read(cx).vault().abs_path(&path);
             cx.open_with_system(&path);
             return;
@@ -510,11 +510,36 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.new_named(folder, false, window, cx);
+    }
+
+    /// Creates an empty Canvas note in `folder`, or the configured folder.
+    pub fn new_canvas(
+        &mut self,
+        folder: Option<VaultPath>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.new_named(folder, true, window, cx);
+    }
+
+    fn new_named(
+        &mut self,
+        folder: Option<VaultPath>,
+        canvas: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let folder = folder
             .unwrap_or_else(|| VaultPath::new(&AppSettings::global(cx).files.new_note_folder));
-        match self.vault.update(cx, |vault, cx| {
-            vault.create_note(&folder, "Untitled", "", cx)
-        }) {
+        let created = self.vault.update(cx, |vault, cx| {
+            if canvas {
+                vault.create_canvas(&folder, "Untitled", "{}", cx)
+            } else {
+                vault.create_note(&folder, "Untitled", "", cx)
+            }
+        });
+        match created {
             Ok(path) => {
                 self.open_note(path, OpenOptions::new().in_new_tab(), window, cx);
                 if let Some(editor) = self.active_editor().cloned() {

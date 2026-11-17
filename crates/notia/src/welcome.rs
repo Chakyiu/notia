@@ -43,7 +43,7 @@ Back to [[Welcome]].
 ## The window
 
 - The **ribbon** on the far left holds plugin buttons: the theme picker and settings.
-- The **left sidebar** holds the *Files* and *Search* panels; switch them with the icons at its top.
+- The **left sidebar** holds the *Files* and *Search* panels; switch them with the icons at its top. The **New canvas** button there, or **Create new canvas** in the palette, opens a *Canvas* note: a board of boxes you drag around and join with connectors.
 - The **right sidebar** holds the *Outline*, *Backlinks*, *Tags*, and *History* panels. *History* keeps each saved version of the open note. **Compare** opens the differences in a popup, and **Restore** puts a version back.
 - The **status bar** at the bottom shows plugin items such as backlinks and word counts.
 

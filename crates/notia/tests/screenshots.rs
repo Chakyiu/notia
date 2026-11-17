@@ -16,12 +16,12 @@ use gpui_kit::{
     point, px, size,
 };
 use notia_plugin::{
-    Notia,
+    Notia, OpenOptions,
     actions::{
         CloseTab, EditMode, HalfEditMode, NewNote, OpenCommandPalette, OpenQuickSwitcher,
         OpenSettings, PreviewMode, RunCommand, ToggleLeftSidebar, ToggleRightSidebar,
     },
-    core::Vault,
+    core::{Vault, VaultPath},
     theme::{ColorScheme, ThemeCatalog},
     workspace,
 };
@@ -157,7 +157,58 @@ fn main() {
     screens.save("19-community-plugin-options");
     screens.close_dialogs();
 
-    screens.dispatch(PreviewMode);
+    // A Canvas note: its boxes and connector, on a board of dots.
+    std::fs::write(
+        folder.path().join("Board.canvas"),
+        r#"{"nodes":[{"id":"1","type":"text","x":-240,"y":-70,"width":190,"height":80,"text":"gateway"},
+                    {"id":"2","type":"text","x":80,"y":70,"width":190,"height":80,"text":"IP Gateway"}],
+             "edges":[{"id":"3","fromNode":"1","toNode":"2"}]}"#,
+    )
+    .expect("write a canvas");
+    screens
+        .cx
+        .update_window(screens.window, |_, window, cx| {
+            workspace::open_note(
+                VaultPath::new("Board.canvas"),
+                OpenOptions::new().in_new_tab(),
+                window,
+                cx,
+            );
+        })
+        .expect("open the canvas");
+    screens.save("20-canvas");
+    let read_board = || {
+        std::fs::read_to_string(folder.path().join("Board.canvas")).expect("read the board back")
+    };
+
+    // Pressing a box moves it, never pulls a connector.
+    screens.drag((419., 319.), (520., 470.));
+    let board = read_board();
+    assert!(
+        !board.contains("\"x\": -240.0"),
+        "the box followed the mouse: {board}"
+    );
+
+    // A double-click on an empty part of the board adds a box.
+    screens.click_at(660., 620., 2);
+    let board = read_board();
+    assert_eq!(
+        board.matches("\"id\"").count(),
+        4,
+        "the new box is on the board: {board}"
+    );
+
+    // Pulling from the dot on the new box's right edge joins it to a box.
+    screens.drag((776., 620.), (800., 480.));
+    let board = read_board();
+    assert_eq!(
+        board.matches("fromNode").count(),
+        2,
+        "a connector was pulled: {board}"
+    );
+    screens.save("21-canvas-edited");
+    screens.dispatch(CloseTab);
+
     screens.cx.update(|cx| {
         Notia::workspace(cx).update(cx, |model, cx| {
             model.request_search("tag:#plugins".into(), cx)
@@ -240,6 +291,11 @@ impl Screens {
 
     /// Clicks at a point of the window, in window coordinates.
     fn click(&mut self, x: f32, y: f32) {
+        self.click_at(x, y, 1);
+    }
+
+    /// A click of `count` clicks at a point; two is a double-click.
+    fn click_at(&mut self, x: f32, y: f32, count: usize) {
         let position = point(px(x), px(y));
         self.cx
             .update_window(self.window, |_, window, cx| {
@@ -256,7 +312,7 @@ impl Screens {
                         button: MouseButton::Left,
                         position,
                         modifiers: Modifiers::default(),
-                        click_count: 1,
+                        click_count: count,
                         first_mouse: false,
                     }),
                     cx,
@@ -266,12 +322,65 @@ impl Screens {
                         button: MouseButton::Left,
                         position,
                         modifiers: Modifiers::default(),
-                        click_count: 1,
+                        click_count: count,
                     }),
                     cx,
                 );
             })
             .expect("click");
+        self.settle();
+    }
+
+    /// Presses at one point, moves to another with the button held, lets go.
+    fn drag(&mut self, from: (f32, f32), to: (f32, f32)) {
+        let steps = [
+            point(px(from.0), px(from.1)),
+            point(px((from.0 + to.0) / 2.), px((from.1 + to.1) / 2.)),
+            point(px(to.0), px(to.1)),
+        ];
+        self.cx
+            .update_window(self.window, |_, window, cx| {
+                window.dispatch_event(
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position: steps[0],
+                        pressed_button: None,
+                        modifiers: Modifiers::default(),
+                    }),
+                    cx,
+                );
+                window.dispatch_event(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        button: MouseButton::Left,
+                        position: steps[0],
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+                for position in &steps[1..] {
+                    window.dispatch_event(
+                        PlatformInput::MouseMove(MouseMoveEvent {
+                            position: *position,
+                            pressed_button: Some(MouseButton::Left),
+                            modifiers: Modifiers::default(),
+                        }),
+                        cx,
+                    );
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                }
+                window.dispatch_event(
+                    PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Left,
+                        position: *steps.last().unwrap(),
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
+                    }),
+                    cx,
+                );
+            })
+            .expect("drag");
         self.settle();
     }
 

@@ -27,6 +27,7 @@ use notia_plugin::{
 };
 
 use crate::attachments::{self, image_in_vault};
+use crate::canvas::CanvasView;
 use crate::reading::{CALLOUTS, NoteUrl, ReadingMarkdown, parse_note_url, to_reading_markdown};
 
 /// Small, so that plugins written in JavaScript hold editor ids exactly.
@@ -49,6 +50,9 @@ pub struct NoteEditor {
     path: VaultPath,
     title: Entity<InputState>,
     editor: Entity<EditorState>,
+    /// The board of a Canvas note. Such a note has no Markdown text, so this
+    /// view draws the body and does the saving.
+    canvas: Option<Entity<CanvasView>>,
     reading: Entity<TextViewState>,
     reading_markdown: ReadingMarkdown,
     extensions: MarkdownExtensions,
@@ -77,7 +81,9 @@ impl NoteEditor {
             ),
         };
         let settings = AppSettings::global(cx).editor.clone();
-
+        let canvas = path
+            .is_canvas()
+            .then(|| cx.new(|cx| CanvasView::new(path.clone(), &text, cx)));
         let title =
             cx.new(|cx| InputState::new(window, cx).default_value(path.file_stem().to_string()));
         let editor = cx.new(|cx| {
@@ -89,7 +95,7 @@ impl NoteEditor {
                     hard_tabs: false,
                 })
                 .placeholder("Start writing…")
-                .default_value(text.clone())
+                .default_value(if canvas.is_some() { "" } else { &text })
         });
         let reading_markdown = to_reading_markdown(&text);
         let reading = cx.new(|cx| TextViewState::markdown(&reading_markdown.text, cx));
@@ -107,6 +113,7 @@ impl NoteEditor {
             path,
             title,
             editor,
+            canvas,
             reading,
             reading_markdown,
             extensions: callout_extensions(),
@@ -154,6 +161,11 @@ impl NoteEditor {
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
+        if let Some(canvas) = &self.canvas {
+            let handle = canvas.read(cx).focus_handle(cx);
+            handle.focus(window, cx);
+            return;
+        }
         match self.mode {
             ViewMode::Editing | ViewMode::Half => self
                 .editor
@@ -233,6 +245,10 @@ impl NoteEditor {
     /// Queues a plugin's edit, which needs a window to apply. It must fit
     /// the text as it will be after the edits queued before it.
     pub fn queue_edit(&mut self, transaction: EditorTransaction, cx: &App) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.canvas.is_none(),
+            "a canvas note holds a board, not text"
+        );
         let snapshot = self.snapshot(cx);
         transaction.apply(&snapshot.text, snapshot.selection)?;
         self.pending_edits.push(transaction);
@@ -285,6 +301,11 @@ impl NoteEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.canvas.is_some() {
+            // A board has no text to format or undo through the editor.
+            self.focus(window, cx);
+            return;
+        }
         self.apply_edits(window, cx);
         let from_preview = self.mode == ViewMode::Reading;
         if from_preview {
@@ -313,6 +334,10 @@ impl NoteEditor {
 
     /// Writes unsaved edits to disk now.
     pub fn save(&mut self, cx: &mut Context<Self>) {
+        if let Some(canvas) = &self.canvas {
+            canvas.update(cx, |canvas, cx| canvas.save(cx));
+            return;
+        }
         self.save_task = None;
         if !self.dirty {
             return;
@@ -420,7 +445,9 @@ impl NoteEditor {
                     cx.notify();
                 }
             }
-            VaultEvent::NotesChanged(paths) if !self.dirty && paths.contains(&self.path) => {
+            VaultEvent::NotesChanged(paths)
+                if !self.dirty && self.canvas.is_none() && paths.contains(&self.path) =>
+            {
                 // Changed outside Notia: show the new text unless the user
                 // has edits of their own.
                 let Some(note) = vault.read(cx).index().get(&self.path) else {
@@ -591,34 +618,37 @@ impl Render for NoteEditor {
             .px_8();
 
         let root = Notia::vault(cx).read(cx).vault().root().to_path_buf();
-        let body = match self.mode {
-            ViewMode::Editing => self.render_source(&appearance, false).into_any_element(),
-            ViewMode::Half => {
-                let border = theme.border;
-                h_flex()
-                    .size_full()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .overflow_hidden()
-                            .child(self.render_source(&appearance, true)),
-                    )
-                    .child(div().w_px().h_full().flex_none().bg(border))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .overflow_hidden()
-                            .child(self.render_reading(&appearance, root, true)),
-                    )
-                    .into_any_element()
-            }
-            ViewMode::Reading => self
-                .render_reading(&appearance, root, false)
-                .into_any_element(),
+        let body = match self.canvas.clone() {
+            Some(board) => board.into_any_element(),
+            None => match self.mode {
+                ViewMode::Editing => self.render_source(&appearance, false).into_any_element(),
+                ViewMode::Half => {
+                    let border = theme.border;
+                    h_flex()
+                        .size_full()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .h_full()
+                                .overflow_hidden()
+                                .child(self.render_source(&appearance, true)),
+                        )
+                        .child(div().w_px().h_full().flex_none().bg(border))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .h_full()
+                                .overflow_hidden()
+                                .child(self.render_reading(&appearance, root.clone(), true)),
+                        )
+                        .into_any_element()
+                }
+                ViewMode::Reading => self
+                    .render_reading(&appearance, root, false)
+                    .into_any_element(),
+            },
         };
 
         v_flex()
@@ -628,7 +658,7 @@ impl Render for NoteEditor {
             .on_action(cx.listener(|this, _: &Paste, window, cx| {
                 // The editor handles paste while it is on screen. In preview
                 // the note itself is focused, so the image is saved here.
-                if this.mode != ViewMode::Reading {
+                if this.mode != ViewMode::Reading || this.canvas.is_some() {
                     return;
                 }
                 let Some(item) = cx.read_from_clipboard() else {
@@ -662,8 +692,10 @@ impl Render for NoteEditor {
                             .h_full()
                             .w_full()
                             .pt_6()
-                            .when_some(appearance.max_width, |this, width| {
-                                this.max_w(width + inset)
+                            .when(self.canvas.is_none(), |this| {
+                                this.when_some(appearance.max_width, |this, width| {
+                                    this.max_w(width + inset)
+                                })
                             })
                             .children(self.toolbars.iter().map(|toolbar| {
                                 div()
@@ -680,7 +712,9 @@ impl Render for NoteEditor {
                                     .items_center()
                                     .pr_8()
                                     .child(div().flex_1().min_w_0().child(title))
-                                    .child(self.render_mode_switch(cx)),
+                                    .when(self.canvas.is_none(), |row| {
+                                        row.child(self.render_mode_switch(cx))
+                                    }),
                             )
                             .child(
                                 div()

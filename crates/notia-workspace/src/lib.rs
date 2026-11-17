@@ -6,6 +6,7 @@
 extern crate gpui_kit as gpui;
 
 mod attachments;
+mod canvas;
 mod note_editor;
 mod palette;
 mod palette_settings;
@@ -53,6 +54,9 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &OpenQuickSwitcher, cx| with_workspace(cx, Workspace::open_quick_switcher));
     cx.on_action(|_: &NewNote, cx| {
         with_workspace(cx, |this, window, cx| this.new_note(None, window, cx))
+    });
+    cx.on_action(|_: &NewCanvas, cx| {
+        with_workspace(cx, |this, window, cx| this.new_canvas(None, window, cx))
     });
     cx.on_action(|_: &CloseTab, cx| with_workspace(cx, Workspace::close_active_tab));
     cx.on_action(|_: &NextTab, cx| {
@@ -229,6 +233,12 @@ impl WorkspaceHandle for Handle {
     fn new_note(&self, folder: Option<VaultPath>, _: &mut Window, cx: &mut App) {
         with_workspace(cx, move |this, window, cx| {
             this.new_note(folder, window, cx)
+        });
+    }
+
+    fn new_canvas(&self, folder: Option<VaultPath>, _: &mut Window, cx: &mut App) {
+        with_workspace(cx, move |this, window, cx| {
+            this.new_canvas(folder, window, cx)
         });
     }
 

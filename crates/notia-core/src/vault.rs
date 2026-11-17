@@ -106,7 +106,7 @@ impl Vault {
                     children,
                 });
             } else if file_type.is_file() {
-                let kind = if path.is_markdown() {
+                let kind = if path.is_markdown() || path.is_canvas() {
                     EntryKind::Note
                 } else {
                     EntryKind::Attachment
@@ -161,7 +161,27 @@ impl Vault {
         title: &str,
         content: &str,
     ) -> io::Result<VaultPath> {
-        let path = self.unique_path(folder, &sanitize_file_name(title), Some("md"));
+        self.create_named(folder, title, "md", content)
+    }
+
+    /// Creates a Canvas note, whose body is the board as JSON.
+    pub fn create_canvas(
+        &self,
+        folder: &VaultPath,
+        title: &str,
+        content: &str,
+    ) -> io::Result<VaultPath> {
+        self.create_named(folder, title, "canvas", content)
+    }
+
+    fn create_named(
+        &self,
+        folder: &VaultPath,
+        title: &str,
+        extension: &str,
+        content: &str,
+    ) -> io::Result<VaultPath> {
+        let path = self.unique_path(folder, &sanitize_file_name(title), Some(extension));
         self.write_note(&path, content)?;
         Ok(path)
     }
@@ -172,12 +192,17 @@ impl Vault {
         Ok(path)
     }
 
-    /// Renames the entry in place. A note keeps its `.md` extension when the
-    /// new name has none.
+    /// Renames the entry in place. A note keeps its extension when the new
+    /// name has none.
     pub fn rename(&self, path: &VaultPath, new_name: &str) -> io::Result<VaultPath> {
         let mut name = sanitize_file_name(new_name);
-        if path.is_markdown() && !VaultPath::new(&name).is_markdown() {
-            name.push_str(".md");
+        if VaultPath::new(&name).extension().is_none()
+            && let Some(extension) = path
+                .extension()
+                .filter(|_| path.is_markdown() || path.is_canvas())
+        {
+            name.push('.');
+            name.push_str(extension);
         }
         let target = path.with_file_name(&name);
         if target == *path {

@@ -550,6 +550,14 @@ impl Render for FileExplorer {
                     .on_click(|_, window, cx| workspace::new_note(None, window, cx)),
             )
             .child(
+                Button::new("explorer-new-canvas")
+                    .icon(Icon::new(Lucide::Frame))
+                    .ghost()
+                    .small()
+                    .tooltip("New canvas")
+                    .on_click(|_, window, cx| workspace::new_canvas(None, window, cx)),
+            )
+            .child(
                 Button::new("explorer-new-folder")
                     .icon(Icon::new(Lucide::FolderPlus))
                     .ghost()
@@ -584,13 +592,20 @@ impl Render for FileExplorer {
             let kind = menu_kinds.get(&id).copied().unwrap_or(EntryKind::Note);
             let explorer = explorer.clone();
             let menu = if kind == EntryKind::Folder {
-                let (note_folder, folder_parent, explorer) =
-                    (path.clone(), path.clone(), explorer.clone());
+                let (note_folder, canvas_folder, folder_parent, explorer) =
+                    (path.clone(), path.clone(), path.clone(), explorer.clone());
                 menu.item(
                     PopupMenuItem::new("New note")
                         .icon(Icon::new(Lucide::FilePlus))
                         .on_click(move |_, window, cx| {
                             workspace::new_note(Some(note_folder.clone()), window, cx)
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("New canvas")
+                        .icon(Icon::new(Lucide::Frame))
+                        .on_click(move |_, window, cx| {
+                            workspace::new_canvas(Some(canvas_folder.clone()), window, cx)
                         }),
                 )
                 .item(

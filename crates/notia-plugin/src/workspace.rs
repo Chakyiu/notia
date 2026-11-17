@@ -175,6 +175,8 @@ pub trait WorkspaceHandle {
     fn run_editor_command(&self, id: EditorId, command: EditorCommand, cx: &mut App);
     /// Creates a note in `folder`, or the configured folder, and opens it.
     fn new_note(&self, folder: Option<VaultPath>, window: &mut Window, cx: &mut App);
+    /// Creates a Canvas note in `folder`, or the configured folder, and opens it.
+    fn new_canvas(&self, folder: Option<VaultPath>, window: &mut Window, cx: &mut App);
     /// Opens the sidebar holding a panel and selects the panel.
     fn show_panel(&self, panel_id: &str, window: &mut Window, cx: &mut App);
     fn run_command(&self, command_id: &str, window: &mut Window, cx: &mut App);
@@ -261,6 +263,12 @@ pub fn run_editor_command(id: EditorId, command: EditorCommand, cx: &mut App) {
 pub fn new_note(folder: Option<VaultPath>, window: &mut Window, cx: &mut App) {
     if let Some(handle) = handle(cx) {
         handle.new_note(folder, window, cx);
+    }
+}
+
+pub fn new_canvas(folder: Option<VaultPath>, window: &mut Window, cx: &mut App) {
+    if let Some(handle) = handle(cx) {
+        handle.new_canvas(folder, window, cx);
     }
 }
 

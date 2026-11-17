@@ -75,6 +75,8 @@ Pasted images are stored in `attachments/`. Deleted files move to `.trash` in th
 
 The button above a note cycles edit, half edit (Markdown and preview side by side), and preview. `⌘E` does the same.
 
+A Canvas note is a board instead of text: `.canvas` JSON with the same shape Obsidian's Canvas plugin uses. Create one with **Create new canvas** in the command palette, or from the Files panel. Double-click the board to add a box, type in it, drag it, drag from a dot on its side to join two boxes, and press delete or use the buttons above the selection. Scroll pans, and with `⌘` it zooms; the rail at the right edge zooms, fits the whole board, and steps back and forth. Groups, images, and file nodes are Notia's “to do”: boards made in another app keep their boxes and connectors.
+
 Search accepts `"phrases"`, `tag:#name`, and `path:folder`.
 
 ## Keyboard

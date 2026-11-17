@@ -14,6 +14,7 @@ actions!(
         OpenQuickSwitcher,
         OpenSettings,
         NewNote,
+        NewCanvas,
         CloseTab,
         NextTab,
         PreviousTab,

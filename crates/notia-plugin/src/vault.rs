@@ -211,6 +211,22 @@ impl VaultModel {
         Ok(path)
     }
 
+    /// Creates a Canvas note in `folder`.
+    pub fn create_canvas(
+        &mut self,
+        folder: &VaultPath,
+        title: &str,
+        content: &str,
+        cx: &mut Context<Self>,
+    ) -> io::Result<VaultPath> {
+        let path = self.vault.create_canvas(folder, title, content)?;
+        let modified = self.vault.modified(&path);
+        self.index
+            .insert(IndexedNote::new(path.clone(), content, modified));
+        self.rescan(cx);
+        Ok(path)
+    }
+
     pub fn create_folder(
         &mut self,
         parent: &VaultPath,

@@ -60,6 +60,12 @@ impl VaultPath {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
     }
 
+    /// A Canvas note: boxes and connectors on a board, saved as JSON.
+    pub fn is_canvas(&self) -> bool {
+        self.extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("canvas"))
+    }
+
     /// The whole path without the `.md` extension, the form wikilinks use.
     pub fn without_markdown_extension(&self) -> &str {
         if self.is_markdown() {
@@ -163,6 +169,8 @@ mod tests {
         assert_eq!(path.file_stem(), "2026-11-13");
         assert_eq!(path.extension(), Some("md"));
         assert!(path.is_markdown());
+        assert!(VaultPath::new("Board.canvas").is_canvas());
+        assert!(!path.is_canvas());
         assert_eq!(path.without_markdown_extension(), "Daily/2026-11-13");
         assert_eq!(path.parent(), Some(VaultPath::new("Daily")));
         assert_eq!(VaultPath::new("a.md").parent(), Some(VaultPath::root()));

@@ -1,32 +1,95 @@
 //! A Kanban note: columns of cards, saved as JSON.
 //!
-//! A new board starts with To do, Doing, and Done. Cards move by dragging,
+//! A new board starts with To do, Doing, and Done. A card is Markdown: Enter
+//! finishes it, and Shift+Enter starts another line. Cards move by dragging,
 //! and the board writes itself shortly after a change, the way a canvas does.
 
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     scroll::ScrollableElement as _,
+    slider::{Slider, SliderEvent, SliderState},
+    text::{TextView, TextViewStyle},
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use serde::{Deserialize, Serialize};
 
-use notia_plugin::{AppSettings, Notia, core::VaultPath};
+use notia_plugin::{AppSettings, Notia, core::VaultPath, workspace};
 
-const COLUMN_W: f32 = 224.;
+use crate::attachments::image_in_vault;
+use crate::reading::{NoteUrl, parse_note_url, to_reading_markdown};
+
 const UNDO_LIMIT: usize = 60;
+const COLUMN_WIDTH_RANGE: (f32, f32) = (160., 420.);
+const CARD_LINES_RANGE: (f32, f32) = (3., 16.);
+const COLUMN_GAP_RANGE: (f32, f32) = (4., 32.);
 
 /// The columns of one board.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 struct Board {
     columns: Vec<Column>,
+    layout: Layout,
+}
+
+/// How this board is drawn. Saved with the board, so each kanban keeps its own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct Layout {
+    column_width: f32,
+    card_lines: f32,
+    gap: f32,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            column_width: 224.,
+            card_lines: 7.,
+            gap: 12.,
+        }
+    }
+}
+
+impl Layout {
+    fn clamped(self) -> Self {
+        Self {
+            column_width: self
+                .column_width
+                .clamp(COLUMN_WIDTH_RANGE.0, COLUMN_WIDTH_RANGE.1),
+            card_lines: self
+                .card_lines
+                .clamp(CARD_LINES_RANGE.0, CARD_LINES_RANGE.1),
+            gap: self.gap.clamp(COLUMN_GAP_RANGE.0, COLUMN_GAP_RANGE.1),
+        }
+    }
+
+    fn column_width(&self) -> f32 {
+        self.column_width
+            .clamp(COLUMN_WIDTH_RANGE.0, COLUMN_WIDTH_RANGE.1)
+    }
+
+    fn card_lines(&self) -> f32 {
+        self.card_lines
+            .clamp(CARD_LINES_RANGE.0, CARD_LINES_RANGE.1)
+    }
+
+    fn gap(&self) -> f32 {
+        self.gap.clamp(COLUMN_GAP_RANGE.0, COLUMN_GAP_RANGE.1)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LayoutField {
+    Width,
+    Lines,
+    Gap,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -69,6 +132,7 @@ impl Board {
                     cards: Vec::new(),
                 },
             ],
+            layout: Layout::default(),
         }
     }
 
@@ -83,6 +147,7 @@ impl Board {
             serde_json::from_str(trimmed).unwrap_or_default()
         };
         board.normalize();
+        board.layout = board.layout.clamped();
         board
     }
 
@@ -265,14 +330,22 @@ enum Editing {
     },
     Card {
         id: String,
-        field: Entity<InputState>,
+        field: Entity<TextareaState>,
     },
 }
 
 impl Editing {
-    fn field(&self) -> Entity<InputState> {
+    fn column_field(&self) -> Option<Entity<InputState>> {
         match self {
-            Self::Column { field, .. } | Self::Card { field, .. } => field.clone(),
+            Self::Column { field, .. } => Some(field.clone()),
+            Self::Card { .. } => None,
+        }
+    }
+
+    fn card_field(&self) -> Option<Entity<TextareaState>> {
+        match self {
+            Self::Card { field, .. } => Some(field.clone()),
+            Self::Column { .. } => None,
         }
     }
 
@@ -318,6 +391,13 @@ pub(crate) struct KanbanView {
     /// The pointer position the rank belongs to, so a new move starts over.
     drop_pointer: Option<(f32, f32)>,
     dragging: Option<String>,
+    /// The board before the current settings drag, so the drag is one undo step.
+    layout_drag: Option<Board>,
+    settings_open: bool,
+    width_slider: Entity<SliderState>,
+    lines_slider: Entity<SliderState>,
+    gap_slider: Entity<SliderState>,
+    _slider_subs: Vec<Subscription>,
     error: Option<SharedString>,
     save_task: Option<Task<()>>,
 }
@@ -327,6 +407,22 @@ impl EventEmitter<KanbanEvent> for KanbanView {}
 impl KanbanView {
     pub(crate) fn new(path: VaultPath, text: &str, cx: &mut Context<Self>) -> Self {
         let board = Board::parse(text);
+        let width_slider =
+            cx.new(|_| layout_slider(COLUMN_WIDTH_RANGE, 4., board.layout.column_width()));
+        let lines_slider =
+            cx.new(|_| layout_slider(CARD_LINES_RANGE, 1., board.layout.card_lines()));
+        let gap_slider = cx.new(|_| layout_slider(COLUMN_GAP_RANGE, 2., board.layout.gap()));
+        let slider_subs = vec![
+            cx.subscribe(&width_slider, |this, _, event: &SliderEvent, cx| {
+                this.on_layout_slider(LayoutField::Width, event, cx);
+            }),
+            cx.subscribe(&lines_slider, |this, _, event: &SliderEvent, cx| {
+                this.on_layout_slider(LayoutField::Lines, event, cx);
+            }),
+            cx.subscribe(&gap_slider, |this, _, event: &SliderEvent, cx| {
+                this.on_layout_slider(LayoutField::Gap, event, cx);
+            }),
+        ];
         Self {
             focus_handle: cx.focus_handle(),
             path,
@@ -341,6 +437,12 @@ impl KanbanView {
             drop_rank: 0,
             drop_pointer: None,
             dragging: None,
+            layout_drag: None,
+            settings_open: false,
+            width_slider,
+            lines_slider,
+            gap_slider,
+            _slider_subs: slider_subs,
             error: None,
             save_task: None,
         }
@@ -348,6 +450,151 @@ impl KanbanView {
 
     pub(crate) fn document(&self) -> SharedString {
         self.board.to_json().into()
+    }
+
+    fn on_layout_slider(
+        &mut self,
+        field: LayoutField,
+        event: &SliderEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let value = match event {
+            SliderEvent::Change(value) | SliderEvent::Release(value) => value.start(),
+        };
+        match event {
+            SliderEvent::Change(_) => {
+                if !self.layout_would_change(field, value) {
+                    return;
+                }
+                if self.layout_drag.is_none() {
+                    self.layout_drag = Some(self.board.clone());
+                }
+                self.write_layout(field, value);
+                self.mark_edited(cx);
+            }
+            SliderEvent::Release(_) => self.finish_layout_drag(cx),
+        }
+    }
+
+    fn layout_would_change(&self, field: LayoutField, value: f32) -> bool {
+        let layout = &self.board.layout;
+        match field {
+            LayoutField::Width => (layout.column_width() - value).abs() >= 0.5,
+            LayoutField::Lines => (layout.card_lines() - value).abs() >= 0.5,
+            LayoutField::Gap => (layout.gap() - value).abs() >= 0.5,
+        }
+    }
+
+    fn write_layout(&mut self, field: LayoutField, value: f32) {
+        match field {
+            LayoutField::Width => {
+                self.board.layout.column_width =
+                    value.clamp(COLUMN_WIDTH_RANGE.0, COLUMN_WIDTH_RANGE.1);
+            }
+            LayoutField::Lines => {
+                self.board.layout.card_lines = value.clamp(CARD_LINES_RANGE.0, CARD_LINES_RANGE.1);
+            }
+            LayoutField::Gap => {
+                self.board.layout.gap = value.clamp(COLUMN_GAP_RANGE.0, COLUMN_GAP_RANGE.1);
+            }
+        }
+    }
+
+    fn finish_layout_drag(&mut self, cx: &mut Context<Self>) {
+        let Some(before) = self.layout_drag.take() else {
+            return;
+        };
+        if before.layout == self.board.layout {
+            return;
+        }
+        self.undo.push(before);
+        if self.undo.len() > UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.mark_edited(cx);
+    }
+
+    fn reset_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.board.layout == Layout::default() {
+            return;
+        }
+        let before = self.board.clone();
+        self.board.layout = Layout::default();
+        self.undo.push(before);
+        if self.undo.len() > UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.sync_sliders(window, cx);
+        self.mark_edited(cx);
+    }
+
+    /// Keeps the sliders on the saved layout after undo, redo, or a reset.
+    fn sync_sliders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let layout = self.board.layout.clone();
+        sync_slider(&self.width_slider, layout.column_width(), window, cx);
+        sync_slider(&self.lines_slider, layout.card_lines(), window, cx);
+        sync_slider(&self.gap_slider, layout.gap(), window, cx);
+    }
+
+    fn settings_panel(
+        &self,
+        muted: Hsla,
+        well: Hsla,
+        border: Hsla,
+        radius: Pixels,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let layout = &self.board.layout;
+        v_flex()
+            .mx_4()
+            .mt_3()
+            .p_3()
+            .gap_3()
+            .rounded(radius)
+            .border_1()
+            .border_color(border)
+            .bg(well)
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Board"),
+                    )
+                    .child(
+                        Button::new("kanban-layout-reset")
+                            .label("Reset")
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Use the usual sizes")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.reset_layout(window, cx)),
+                            ),
+                    ),
+            )
+            .child(setting_row(
+                "Column width",
+                format!("{:.0} px", layout.column_width()),
+                &self.width_slider,
+                muted,
+            ))
+            .child(setting_row(
+                "Card height",
+                format!("{:.0} lines", layout.card_lines()),
+                &self.lines_slider,
+                muted,
+            ))
+            .child(setting_row(
+                "Column gap",
+                format!("{:.0} px", layout.gap()),
+                &self.gap_slider,
+                muted,
+            ))
     }
 
     fn change(&mut self, mutate: impl FnOnce(&mut Board), cx: &mut Context<Self>) {
@@ -527,13 +774,7 @@ impl KanbanView {
         {
             return;
         }
-        self.open_field(
-            EditingKind::Column(id.to_string()),
-            title,
-            "Column",
-            window,
-            cx,
-        );
+        self.open_column(id.to_string(), title, window, cx);
     }
 
     fn begin_card_edit(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -548,41 +789,33 @@ impl KanbanView {
             return;
         }
         self.selected = Some(id.to_string());
-        self.open_field(EditingKind::Card(id.to_string()), text, "Card", window, cx);
+        self.open_card(id.to_string(), text, window, cx);
     }
 
-    fn open_field(
+    fn open_column(
         &mut self,
-        kind: EditingKind,
+        id: String,
         text: String,
-        placeholder: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(edit) = self.editing.clone() {
-            self.commit_edit(&edit.field(), cx);
-        }
+        self.commit_current(cx);
         let field = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(placeholder)
+                .placeholder("Column")
                 .default_value(text)
         });
-        self.edit_subscription =
-            Some(
-                cx.subscribe_in(&field, window, |this, field, event, _, cx| match event {
-                    InputEvent::PressEnter { .. } | InputEvent::Blur => this.commit_edit(field, cx),
-                    _ => {}
-                }),
-            );
-        self.editing = Some(match kind {
-            EditingKind::Column(id) => Editing::Column {
-                id,
-                field: field.clone(),
+        self.edit_subscription = Some(cx.subscribe_in(
+            &field,
+            window,
+            |this, field, event, _, cx| match event {
+                InputEvent::PressEnter { .. } | InputEvent::Blur => this.commit_column(field, cx),
+                _ => {}
             },
-            EditingKind::Card(id) => Editing::Card {
-                id,
-                field: field.clone(),
-            },
+        ));
+        self.editing = Some(Editing::Column {
+            id,
+            field: field.clone(),
         });
         field.update(cx, |field, cx| {
             field.select_all(window, cx);
@@ -591,43 +824,101 @@ impl KanbanView {
         cx.notify();
     }
 
-    /// Moves the field's text onto the board, once. A dropped field blurs,
-    /// so the same commit runs again; clearing the edit first stops it.
-    fn commit_edit(&mut self, field: &Entity<InputState>, cx: &mut Context<Self>) {
+    /// A card is a textarea: Enter writes it, and Shift+Enter inserts a line.
+    fn open_card(&mut self, id: String, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_current(cx);
+        let field = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Card")
+                .default_value(text)
+                .submit_on_enter(true)
+                .auto_grow(1, 10_000)
+        });
+        self.edit_subscription =
+            Some(
+                cx.subscribe_in(&field, window, |this, field, event, _, cx| match event {
+                    InputEvent::PressEnter { shift: false, .. } | InputEvent::Blur => {
+                        this.commit_card(field, cx)
+                    }
+                    _ => {}
+                }),
+            );
+        self.editing = Some(Editing::Card {
+            id,
+            field: field.clone(),
+        });
+        field.update(cx, |field, cx| {
+            field.select_all(window, cx);
+            field.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn commit_current(&mut self, cx: &mut Context<Self>) {
         let Some(edit) = self.editing.clone() else {
             return;
         };
-        if edit.field() != *field {
+        match edit {
+            Editing::Column { field, .. } => self.commit_column(&field, cx),
+            Editing::Card { field, .. } => self.commit_card(&field, cx),
+        }
+    }
+
+    /// Moves the field's text onto the board, once. A dropped field blurs,
+    /// so the same commit runs again; clearing the edit first stops it.
+    fn commit_column(&mut self, field: &Entity<InputState>, cx: &mut Context<Self>) {
+        let Some(edit) = self.editing.clone() else {
+            return;
+        };
+        let Some(current) = edit.column_field() else {
+            return;
+        };
+        if current != *field {
             return;
         }
+        let Editing::Column { id, .. } = edit else {
+            return;
+        };
         self.editing = None;
         self.edit_subscription = None;
         let text = field.read(cx).value().trim().to_string();
-        match edit {
-            Editing::Column { id, .. } => {
-                if self
-                    .board
-                    .column(&id)
-                    .is_some_and(|column| column.title == text)
-                {
-                    cx.notify();
-                    return;
-                }
-                let title = if text.is_empty() {
-                    "Untitled".to_string()
-                } else {
-                    text
-                };
-                self.change(move |board| board.rename_column(&id, title), cx);
-            }
-            Editing::Card { id, .. } => {
-                if self.board.card(&id).is_some_and(|card| card.text == text) {
-                    cx.notify();
-                    return;
-                }
-                self.change(move |board| board.set_card_text(&id, text), cx);
-            }
+        if self
+            .board
+            .column(&id)
+            .is_some_and(|column| column.title == text)
+        {
+            cx.notify();
+            return;
         }
+        let title = if text.is_empty() {
+            "Untitled".to_string()
+        } else {
+            text
+        };
+        self.change(move |board| board.rename_column(&id, title), cx);
+    }
+
+    fn commit_card(&mut self, field: &Entity<TextareaState>, cx: &mut Context<Self>) {
+        let Some(edit) = self.editing.clone() else {
+            return;
+        };
+        let Some(current) = edit.card_field() else {
+            return;
+        };
+        if current != *field {
+            return;
+        }
+        let Editing::Card { id, .. } = edit else {
+            return;
+        };
+        self.editing = None;
+        self.edit_subscription = None;
+        let text = card_body(&field.read(cx).value());
+        if self.board.card(&id).is_some_and(|card| card.text == text) {
+            cx.notify();
+            return;
+        }
+        self.change(move |board| board.set_card_text(&id, text), cx);
     }
 
     fn drop_card(&mut self, drag: &CardDrag, cx: &mut Context<Self>) {
@@ -695,6 +986,7 @@ impl KanbanView {
         let modifiers = &event.keystroke.modifiers;
         match key {
             "backspace" | "delete" => self.delete_selected(cx),
+            "escape" if self.settings_open => self.settings_open = false,
             "escape" => self.selected = None,
             "enter" => {
                 if let Some(id) = self.selected.clone() {
@@ -711,11 +1003,6 @@ impl KanbanView {
     }
 }
 
-enum EditingKind {
-    Column(String),
-    Card(String),
-}
-
 impl Focusable for KanbanView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -723,7 +1010,9 @@ impl Focusable for KanbanView {
 }
 
 impl Render for KanbanView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let card_max = card_max_height(window, self.board.layout.card_lines());
+        self.sync_sliders(window, cx);
         if !cx.has_active_drag() {
             self.drop_at = None;
             self.drop_rank = 0;
@@ -751,6 +1040,10 @@ impl Render for KanbanView {
         let can_undo = !self.undo.is_empty();
         let can_redo = !self.redo.is_empty();
 
+        let settings = self
+            .settings_open
+            .then(|| self.settings_panel(muted, well, border, radius, cx));
+
         let mut column_views = Vec::new();
         for column in &board_columns {
             column_views.push(self.column_view(
@@ -767,6 +1060,7 @@ impl Render for KanbanView {
                 muted,
                 danger,
                 radius,
+                card_max,
                 cx,
             ));
         }
@@ -806,6 +1100,18 @@ impl Render for KanbanView {
                     .child(
                         h_flex()
                             .gap_1()
+                            .child(
+                                Button::new("kanban-settings")
+                                    .icon(Icon::new(IconName::SlidersHorizontal))
+                                    .ghost()
+                                    .small()
+                                    .selected(self.settings_open)
+                                    .tooltip("Board settings")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.settings_open = !this.settings_open;
+                                        cx.notify();
+                                    })),
+                            )
                             .child(history_button(
                                 cx,
                                 "kanban-undo",
@@ -824,6 +1130,7 @@ impl Render for KanbanView {
                             )),
                     ),
             )
+            .when_some(settings, |board, panel| board.child(panel))
             .child(
                 div()
                     .id("kanban-scroll")
@@ -834,7 +1141,7 @@ impl Render for KanbanView {
                         h_flex()
                             .h_full()
                             .items_stretch()
-                            .gap_3()
+                            .gap(px(self.board.layout.gap()))
                             .px_4()
                             .pt_3()
                             .pb_4()
@@ -882,6 +1189,7 @@ impl KanbanView {
         muted: Hsla,
         danger: Hsla,
         radius: Pixels,
+        card_max: Pixels,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let drop_index = drop_at.and_then(|(id, index)| (id == &column.id).then_some(*index));
@@ -915,6 +1223,7 @@ impl KanbanView {
                     muted,
                     danger,
                     radius,
+                    card_max,
                     cx,
                 )
                 .into_any_element(),
@@ -927,7 +1236,7 @@ impl KanbanView {
         let count = column.cards.len();
         v_flex()
             .id(SharedString::from(format!("kanban-column-{}", column.id)))
-            .w(px(COLUMN_W))
+            .w(px(self.board.layout.column_width()))
             .h_full()
             .flex_none()
             .rounded(radius)
@@ -1065,6 +1374,7 @@ impl KanbanView {
         muted: Hsla,
         danger: Hsla,
         radius: Pixels,
+        card_max: Pixels,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let id = card.id.clone();
@@ -1136,22 +1446,33 @@ impl KanbanView {
             )
             .on_drop(cx.listener(|this, drag: &CardDrag, _, cx| this.drop_card(drag, cx)))
             .child(match editing_field {
-                Some(field) => div()
+                Some(field) => card_scroll(
+                    &id,
+                    card_max,
+                    Textarea::new(&field)
+                        .appearance(false)
+                        .small()
+                        .text_sm()
+                        .w_full(),
+                )
+                .into_any_element(),
+                None if empty => div()
                     .w_full()
-                    .pr(px(24.))
-                    .child(Input::new(&field).appearance(false).text_sm().w_full()),
-                None => div()
-                    .w_full()
-                    .pr(if selected { px(24.) } else { px(0.) })
                     .text_sm()
-                    .whitespace_normal()
-                    .line_clamp(8)
-                    .text_color(if empty { muted } else { foreground })
-                    .child(if empty {
-                        "Empty card".to_string()
-                    } else {
-                        card.text.clone()
-                    }),
+                    .text_color(muted)
+                    .child("Empty card")
+                    .into_any_element(),
+                None => card_scroll(
+                    &id,
+                    card_max,
+                    div()
+                        .w_full()
+                        .pr(if selected { px(24.) } else { px(0.) })
+                        .text_sm()
+                        .text_color(foreground)
+                        .child(self.card_markdown(card, cx)),
+                )
+                .into_any_element(),
             })
             .when(selected, |card| {
                 card.child(
@@ -1169,6 +1490,161 @@ impl KanbanView {
                 )
             })
     }
+}
+
+impl KanbanView {
+    /// The card as the same Markdown a note uses, including wikilinks.
+    fn card_markdown(&self, card: &Card, cx: &mut Context<Self>) -> impl IntoElement {
+        let source = visible_line_breaks(&to_reading_markdown(&card.text).text);
+        let from = self.path.clone();
+        let root = Notia::vault(cx).read(cx).vault().root().to_path_buf();
+        TextView::markdown(SharedString::from(format!("kanban-md-{}", card.id)), source)
+            .selectable(false)
+            .scrollable(false)
+            .text_sm()
+            .style(
+                TextViewStyle::default()
+                    .paragraph_gap(rems(0.25))
+                    .heading_font_size(|level, _| px(13. + (6 - u32::from(level)).min(4) as f32)),
+            )
+            .image_source(move |uri| image_in_vault(root.clone(), uri))
+            .on_link_click(move |url, event, window, cx| match parse_note_url(url) {
+                Some(NoteUrl::Note(target)) => {
+                    let new_tab = event.modifiers().secondary(cx);
+                    workspace::open_link(&target, Some(from.clone()), new_tab, window, cx);
+                }
+                Some(NoteUrl::Tag(tag)) => {
+                    Notia::workspace(cx).update(cx, |model, cx| {
+                        model.request_search(format!("tag:#{tag}").into(), cx);
+                    });
+                }
+                None => cx.open_url(url),
+            })
+    }
+}
+
+/// Seven lines of the card's text. The card uses the small size, so the cap
+/// follows that size rather than the window's larger text.
+fn card_max_height(window: &Window, lines: f32) -> Pixels {
+    // Cards use the small text size, 0.875 of the window text.
+    window.line_height() * 0.875 * lines
+}
+
+/// A Shift+Enter in a card is a real line. Markdown would otherwise draw a
+/// single newline as a space, so those breaks become hard breaks. A blank
+/// line, a list, a heading, or a code fence stays a block break.
+fn visible_line_breaks(source: &str) -> String {
+    let lines: Vec<&str> = source.split('\n').collect();
+    let mut out = String::with_capacity(source.len());
+    let mut fence: Option<(char, usize)> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if let Some((marker, len)) = fence {
+            let run = trimmed.chars().take_while(|&ch| ch == marker).count();
+            if run >= len && trimmed[run..].trim().is_empty() {
+                fence = None;
+            }
+        } else if let Some(open) = fence_open(trimmed) {
+            fence = Some(open);
+        }
+        out.push_str(line);
+        let Some(next) = lines.get(i + 1) else {
+            break;
+        };
+        let block = fence.is_some()
+            || line.is_empty()
+            || next.is_empty()
+            || block_line(next)
+            || line.ends_with("  ")
+            || line.ends_with('\\');
+        if block {
+            out.push('\n');
+        } else {
+            out.push_str("\\\n");
+        }
+    }
+    out
+}
+
+fn fence_open(line: &str) -> Option<(char, usize)> {
+    let marker = line.chars().next().filter(|ch| *ch == '`' || *ch == '~')?;
+    let len = line.chars().take_while(|&ch| ch == marker).count();
+    (len >= 3).then_some((marker, len))
+}
+
+fn block_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with('#')
+        || trimmed.starts_with('>')
+        || trimmed.starts_with("- ")
+        || trimmed.starts_with("* ")
+        || trimmed.starts_with("+ ")
+        || trimmed.starts_with("- [")
+        || ordered_list(trimmed)
+}
+
+fn ordered_list(line: &str) -> bool {
+    let Some((number, rest)) = line.split_once(['.', ')']) else {
+        return false;
+    };
+    !number.is_empty()
+        && number.chars().all(|ch| ch.is_ascii_digit())
+        && rest.starts_with([' ', '\t'])
+}
+
+/// The card text to store. Blank lines at either end go; a leading indent
+/// stays, because that is how a Markdown code block is written.
+fn card_body(raw: &str) -> String {
+    let text = raw.trim_matches(['\n', '\r']);
+    if text.trim().is_empty() {
+        String::new()
+    } else {
+        text.to_string()
+    }
+}
+
+fn layout_slider(range: (f32, f32), step: f32, value: f32) -> SliderState {
+    SliderState::new()
+        .min(range.0)
+        .max(range.1)
+        .step(step)
+        .default_value(value)
+}
+
+fn sync_slider(slider: &Entity<SliderState>, value: f32, window: &mut Window, cx: &mut App) {
+    slider.update(cx, |state, cx| {
+        if (state.value().start() - value).abs() > 0.01 {
+            state.set_value(value, window, cx);
+        }
+    });
+}
+
+fn setting_row(
+    label: &'static str,
+    value: String,
+    slider: &Entity<SliderState>,
+    muted: Hsla,
+) -> impl IntoElement {
+    v_flex()
+        .gap_1()
+        .child(
+            h_flex()
+                .items_center()
+                .justify_between()
+                .child(div().text_sm().child(label))
+                .child(div().text_xs().text_color(muted).child(value)),
+        )
+        .child(Slider::new(slider).w_full())
+}
+
+/// The card body, at most seven lines tall. A longer card scrolls here.
+fn card_scroll(id: &str, max_h: Pixels, child: impl IntoElement) -> impl IntoElement {
+    div()
+        .id(SharedString::from(format!("kanban-card-scroll-{id}")))
+        .w_full()
+        .max_h(max_h)
+        .overflow_y_scrollbar()
+        .child(child)
 }
 
 fn drop_line(color: Hsla) -> Div {
@@ -1199,7 +1675,39 @@ fn history_button(
 
 #[cfg(test)]
 mod tests {
-    use super::{Board, Card};
+    use super::{Board, Card, Layout, card_body, visible_line_breaks};
+
+    #[test]
+    fn a_board_without_layout_uses_the_usual_sizes() {
+        let board = Board::parse(r#"{"columns":[{"id":"1","title":"To do","cards":[]}]}"#);
+        assert_eq!(board.layout, Layout::default());
+        let mut sized = Board::starter();
+        sized.layout.column_width = 300.;
+        sized.layout.card_lines = 5.;
+        sized.layout.gap = 20.;
+        let read = Board::parse(&sized.to_json());
+        assert_eq!(read.layout.column_width(), 300.);
+        assert_eq!(read.layout.card_lines(), 5.);
+        assert_eq!(read.layout.gap(), 20.);
+    }
+
+    #[test]
+    fn a_typed_line_break_stays_a_line_and_lists_stay_blocks() {
+        assert_eq!(visible_line_breaks("one\ntwo"), "one\\\ntwo");
+        assert_eq!(visible_line_breaks("one\n\ntwo"), "one\n\ntwo");
+        assert_eq!(visible_line_breaks("- a\n- b"), "- a\n- b");
+        assert_eq!(
+            visible_line_breaks("```\n- not a list\n```"),
+            "```\n- not a list\n```"
+        );
+    }
+
+    #[test]
+    fn card_text_keeps_markdown_lines() {
+        assert_eq!(card_body("**bold**\n- item\n"), "**bold**\n- item");
+        assert_eq!(card_body("    code"), "    code");
+        assert_eq!(card_body("\n\n  \n"), "");
+    }
 
     fn texts<'a>(board: &'a Board, column: &str) -> Vec<&'a str> {
         board

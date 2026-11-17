@@ -77,7 +77,7 @@ The button above a note cycles edit, half edit (Markdown and preview side by sid
 
 A Canvas note is a board instead of text: `.canvas` JSON with the same shape Obsidian's Canvas plugin uses. Create one with **Create new canvas** in the command palette, or from the Files panel. Double-click the board to add a box, type in it, drag it, drag from a dot on its side to join two boxes, and press delete or use the buttons above the selection. Scroll pans, and with `⌘` it zooms; the rail at the right edge zooms, fits the whole board, and steps back and forth. Groups, images, and file nodes are Notia's “to do”: boards made in another app keep their boxes and connectors.
 
-A Kanban note is columns of cards, saved as `.kanban` JSON. Create one with **Create new kanban** in the command palette, or from the Files panel. A new board starts with To do, Doing, and Done. Add a card from its column, double-click to rename it, and drag it onto another card or column. Delete removes the selected card, and `⌘Z` steps back.
+A Kanban note is columns of cards, saved as `.kanban` JSON. Create one with **Create new kanban** in the command palette, or from the Files panel. A new board starts with To do, Doing, and Done. Add a card from its column and double-click it to edit. The card is Markdown: Enter finishes it, and Shift+Enter starts a new line. A card shows seven lines, and the rest scrolls inside it. The sliders button sets the column width, the card height, and the space between columns. Drag a card onto another card or column. Delete removes the selected card, and `⌘Z` steps back.
 
 Search accepts `"phrases"`, `tag:#name`, and `path:folder`.
 

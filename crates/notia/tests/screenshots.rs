@@ -215,8 +215,8 @@ fn main() {
     std::fs::write(
         folder.path().join("Tasks.kanban"),
         r#"{"columns":[
-            {"id":"1","title":"To do","cards":[{"id":"4","text":"Write the outline"},{"id":"5","text":"Sketch the board"}]},
-            {"id":"2","title":"Doing","cards":[{"id":"6","text":"Drag cards between columns"}]},
+            {"id":"1","title":"To do","cards":[{"id":"4","text":"**Write the outline**\n- [ ] first pass"},{"id":"5","text":"Sketch the board"}]},
+            {"id":"2","title":"Doing","cards":[{"id":"6","text":"Drag cards between columns\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11"}]},
             {"id":"3","title":"Done","cards":[{"id":"7","text":"Open the vault"}]}
         ]}"#,
     )
@@ -233,10 +233,14 @@ fn main() {
         })
         .expect("open the kanban");
     screens.save("22-kanban");
+    screens.click(923., 133.);
+    screens.save("23-kanban-settings");
     let kanban =
         std::fs::read_to_string(folder.path().join("Tasks.kanban")).expect("read the kanban back");
     assert!(
-        kanban.contains("Write the outline") && kanban.contains("Drag cards between columns"),
+        kanban.contains("Write the outline")
+            && kanban.contains("Drag cards between columns")
+            && kanban.contains('\n'),
         "opening the board kept its cards: {kanban}"
     );
     screens.dispatch(CloseTab);

@@ -50,7 +50,13 @@ The release contains:
 | `Notia-<version>-linux-<arch>.tar.gz` | Linux. The binary links the system Wayland, X11, and font libraries |
 | `Notia-<version>-windows-<arch>.zip` | Windows |
 
-The macOS app is signed ad hoc, and the Windows executable is unsigned, so the system asks for confirmation before opening them. Running the workflow by hand, without a tag, builds the same images and keeps them as workflow artifacts.
+The macOS app is signed ad hoc, and the Windows executable is unsigned, so the system asks for confirmation before opening them. After copying Notia out of the disk image, macOS may still refuse to open it because the download is quarantined. Clear that attribute, then open the app again:
+
+```
+xattr -dr com.apple.quarantine /Applications/Notia.app
+```
+
+Running the workflow by hand, without a tag, builds the same images and keeps them as workflow artifacts.
 
 ## Phone
 

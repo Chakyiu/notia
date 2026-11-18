@@ -218,7 +218,6 @@ fn menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("Command Palette…", OpenCommandPalette),
                 MenuItem::action("Edit Mode", EditMode),
-                MenuItem::action("Half Edit Mode", HalfEditMode),
                 MenuItem::action("Preview Mode", PreviewMode),
                 MenuItem::action("Toggle Edit and Preview", ToggleReadingView),
                 MenuItem::Separator,

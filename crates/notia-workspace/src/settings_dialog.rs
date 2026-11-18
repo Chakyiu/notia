@@ -33,7 +33,7 @@ pub(crate) fn open_settings(window: &mut Window, cx: &mut App) {
         let (sync, plugins) = plugin_pages(cx);
         let mut pages = vec![
             appearance_page(cx),
-            editor_page(),
+            editor_page(cx),
             crate::palette_settings::page(cx),
             files_page(),
         ];
@@ -455,36 +455,55 @@ fn appearance_page(cx: &App) -> SettingPage {
         ])
 }
 
-fn editor_page() -> SettingPage {
+fn editor_page(cx: &App) -> SettingPage {
+    let mut views = vec![
+        ("editing".into(), "Edit".into()),
+        ("reading".into(), "Preview".into()),
+    ];
+    if AppSettings::global(cx).editor.split_view {
+        views.insert(1, ("half".into(), "Split".into()));
+    }
     SettingPage::new("Editor")
         .icon(IconName::FileText)
         .group(SettingGroup::new().items(vec![
             SettingItem::new(
+                "Split view",
+                SettingField::switch(
+                    |cx: &App| AppSettings::global(cx).editor.split_view,
+                    |value: bool, cx: &mut App| {
+                        AppSettings::update(cx, |settings| {
+                            settings.editor.split_view = value;
+                            if !value && settings.editor.default_view == ViewMode::Half {
+                                settings.editor.default_view = ViewMode::Editing;
+                            }
+                        });
+                        cx.refresh_windows();
+                    },
+                ),
+            )
+            .description(
+                "Shows the Markdown and the preview side by side. The button above a note then cycles edit, split, and preview.",
+            ),
+            SettingItem::new(
                 "Default view for new tabs",
                 SettingField::dropdown(
-                    vec![
-                        ("editing".into(), "Edit".into()),
-                        ("half".into(), "Half edit".into()),
-                        ("reading".into(), "Preview".into()),
-                    ],
-                    |cx: &App| match AppSettings::global(cx).editor.default_view {
-                        ViewMode::Editing => "editing".into(),
+                    views,
+                    |cx: &App| match AppSettings::global(cx).editor.opening_view() {
                         ViewMode::Half => "half".into(),
                         ViewMode::Reading => "reading".into(),
+                        ViewMode::Editing => "editing".into(),
                     },
                     |value: SharedString, cx: &mut App| {
                         let view = match value.as_ref() {
                             "reading" => ViewMode::Reading,
-                            "half" => ViewMode::Half,
+                            "half" if AppSettings::global(cx).editor.split_view => ViewMode::Half,
                             _ => ViewMode::Editing,
                         };
                         AppSettings::update(cx, |settings| settings.editor.default_view = view);
                     },
                 ),
             )
-            .description(
-                "Edit shows the Markdown. Half edit shows both. Preview shows the rendered note.",
-            ),
+            .description("Edit shows the Markdown. Preview shows the rendered note."),
             SettingItem::new(
                 "Show line numbers",
                 SettingField::switch(

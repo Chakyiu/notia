@@ -1323,6 +1323,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if mode == ViewMode::Half && !AppSettings::global(cx).editor.split_view {
+            return;
+        }
         self.note_focus(window, cx);
         if let Some(editor) = self.active_editor().cloned() {
             editor.update(cx, |editor, cx| editor.set_mode(mode, window, cx));
@@ -2030,6 +2033,14 @@ impl Workspace {
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
                             this.open_tab_menu(pane, ix, event.position, window, cx);
+                        }),
+                    )
+                    // A middle click closes the tab, the same way a browser tab does.
+                    .on_mouse_down(
+                        MouseButton::Middle,
+                        cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.close_in(pane, ix, window, cx);
                         }),
                     )
                     .on_drag(

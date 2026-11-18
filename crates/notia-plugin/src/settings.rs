@@ -18,12 +18,12 @@ pub enum ViewMode {
 }
 
 impl ViewMode {
-    /// The next mode in the cycle: edit, half edit, preview.
-    pub fn next(self) -> Self {
-        match self {
-            Self::Editing => Self::Half,
-            Self::Half => Self::Reading,
-            Self::Reading => Self::Editing,
+    /// The next mode. Split is included only when `split` is on.
+    pub fn next(self, split: bool) -> Self {
+        match (self, split) {
+            (Self::Editing, true) => Self::Half,
+            (Self::Editing, false) | (Self::Half, _) => Self::Reading,
+            (Self::Reading, _) => Self::Editing,
         }
     }
 
@@ -38,6 +38,8 @@ impl ViewMode {
 pub struct EditorSettings {
     /// How newly opened notes are shown.
     pub default_view: ViewMode,
+    /// Whether the note button also offers a split of the source and the preview.
+    pub split_view: bool,
     pub line_numbers: bool,
     /// How long typing must pause before a note is saved.
     pub autosave_delay_ms: u64,
@@ -48,9 +50,21 @@ impl Default for EditorSettings {
     fn default() -> Self {
         Self {
             default_view: ViewMode::Editing,
+            split_view: false,
             line_numbers: false,
             autosave_delay_ms: 800,
             tab_size: 4,
+        }
+    }
+}
+
+impl EditorSettings {
+    /// The view a new tab opens in. Split is left out while that mode is off.
+    pub fn opening_view(&self) -> ViewMode {
+        if self.default_view == ViewMode::Half && !self.split_view {
+            ViewMode::Editing
+        } else {
+            self.default_view
         }
     }
 }
@@ -150,5 +164,16 @@ mod tests {
         assert!(settings.palette.enabled);
         assert!(settings.palette.hidden.is_empty());
         assert!(settings.palette.hotkeys.is_empty());
+    }
+
+    #[test]
+    fn split_stays_out_of_the_cycle_until_it_is_turned_on() {
+        let settings: EditorSettings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.split_view);
+        assert_eq!(settings.opening_view(), ViewMode::Editing);
+        assert_eq!(ViewMode::Editing.next(false), ViewMode::Reading);
+        assert_eq!(ViewMode::Reading.next(false), ViewMode::Editing);
+        assert_eq!(ViewMode::Editing.next(true), ViewMode::Half);
+        assert_eq!(ViewMode::Half.next(true), ViewMode::Reading);
     }
 }

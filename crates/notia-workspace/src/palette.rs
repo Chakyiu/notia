@@ -11,7 +11,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use notia_plugin::{
-    OpenOptions, PaletteCommand, PluginHost,
+    AppSettings, OpenOptions, PaletteCommand, PluginHost,
     actions::{
         CloseTab, EditMode, HalfEditMode, ManageVaults, NewCanvas, NewKanban, NewNote, NextTab,
         OpenCommandPalette, OpenQuickSwitcher, OpenSettings, PreviewMode, PreviousTab, SaveNote,
@@ -61,7 +61,7 @@ pub(crate) fn install(cx: &mut App) {
             ),
             PaletteCommand::core::<EditMode>("Edit mode", None, Some(Icon::new(Lucide::Pencil))),
             PaletteCommand::core::<HalfEditMode>(
-                "Half edit mode",
+                "Split view",
                 None,
                 Some(Icon::new(Lucide::Columns2)),
             ),
@@ -151,6 +151,11 @@ impl Workspace {
         let mut rows: Vec<(SharedString, Option<Icon>, Box<dyn Action>)> = Vec::new();
         for command in hotkeys::commands(cx) {
             if !hotkeys::is_listed(&command.id, cx) {
+                continue;
+            }
+            if !AppSettings::global(cx).editor.split_view
+                && command.id.as_ref() == HalfEditMode::name_for_type()
+            {
                 continue;
             }
             if PluginHost::global(cx)

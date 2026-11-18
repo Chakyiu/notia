@@ -141,7 +141,7 @@ impl NoteEditor {
             reading,
             reading_markdown,
             extensions: callout_extensions(),
-            mode: settings.default_view,
+            mode: settings.opening_view(),
             dirty: false,
             reading_stale: false,
             save_task: None,
@@ -258,7 +258,8 @@ impl NoteEditor {
     }
 
     pub fn toggle_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_mode(self.mode.next(), window, cx);
+        let split = AppSettings::global(cx).editor.split_view;
+        self.set_mode(self.mode.next(split), window, cx);
     }
 
     /// Moves to a 0-based source line, in either mode.
@@ -563,13 +564,17 @@ impl NoteEditor {
         self.editor.update(cx, |editor, cx| {
             editor.set_line_number(settings.line_numbers, window, cx);
         });
+        if !settings.split_view && self.mode == ViewMode::Half {
+            self.set_mode(ViewMode::Editing, window, cx);
+        }
     }
 
     /// The mode button and the note menu beside it. One click moves to the
-    /// next of edit, half edit, and preview.
+    /// next of edit and preview, and split when that is turned on.
     fn render_mode_switch(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (icon, tooltip) = match self.mode.next() {
-            ViewMode::Half => (Lucide::Columns2, "Half edit"),
+        let split = AppSettings::global(cx).editor.split_view;
+        let (icon, tooltip) = match self.mode.next(split) {
+            ViewMode::Half => (Lucide::Columns2, "Split the Markdown and the preview"),
             ViewMode::Reading => (Lucide::BookOpen, "Preview the rendered note"),
             ViewMode::Editing => (Lucide::Pencil, "Edit the Markdown"),
         };

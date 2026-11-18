@@ -29,7 +29,7 @@ actions!(
         HalfEditMode,
         /// Shows the active note rendered.
         PreviewMode,
-        /// Cycles the active note through edit, half edit, and preview.
+        /// Cycles the active note through edit and preview, and split when that is on.
         ToggleReadingView,
         SaveNote,
     ]

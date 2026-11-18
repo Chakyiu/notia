@@ -16,7 +16,7 @@ use gpui_kit::{
     point, px, size,
 };
 use notia_plugin::{
-    Notia, OpenOptions,
+    AppSettings, Notia, OpenOptions,
     actions::{
         CloseTab, EditMode, HalfEditMode, NewNote, OpenCommandPalette, OpenQuickSwitcher,
         OpenSettings, PreviewMode, RunCommand, ToggleLeftSidebar, ToggleRightSidebar,
@@ -129,6 +129,9 @@ fn main() {
     screens.save("16-sidebars-closed");
     screens.dispatch(ToggleLeftSidebar);
     screens.dispatch(ToggleRightSidebar);
+    screens.cx.update(|cx| {
+        AppSettings::update(cx, |settings| settings.editor.split_view = true);
+    });
     screens.dispatch(HalfEditMode);
     screens.save("17-half-edit");
     screens.dispatch(PreviewMode);

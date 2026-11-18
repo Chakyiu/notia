@@ -85,9 +85,9 @@ Notes are `.md` files. `[[Getting around]]` links to a note, and `[[Themes and p
 
 Pasted images are stored in `attachments/`. Deleted files move to `.trash` in the vault. Vault settings, installed themes, and community plugins live in `.notia/`.
 
-The button above a note cycles edit, half edit (Markdown and preview side by side), and preview. `⌘E` does the same.
+The button above a note cycles edit and preview. `⌘E` does the same. Split, which shows the Markdown and the preview side by side, is turned on in Settings → Editor.
 
-![Half edit, with the Markdown and the preview side by side](docs/half-edit.png)
+![Split view, with the Markdown and the preview side by side](docs/half-edit.png)
 
 A Canvas note is a board instead of text: `.canvas` JSON with the same shape Obsidian's Canvas plugin uses. Create one with **Create new canvas** in the command palette, or from the Files panel. Double-click the board to add a box, type in it, drag it, drag from a dot on its side to join two boxes, and press delete or use the buttons above the selection. Scroll pans, and with `⌘` it zooms; the rail at the right edge zooms, fits the whole board, and steps back and forth. Groups, images, and file nodes are Notia's “to do”: boards made in another app keep their boxes and connectors.
 
@@ -112,7 +112,7 @@ On Windows and Linux, Ctrl takes the place of `⌘`. Next and previous tab use C
 | Close tab | `⌘W` |
 | Next tab | `Ctrl+Tab` |
 | Previous tab | `Ctrl+Shift+Tab` |
-| Edit, half edit, and preview | `⌘E` |
+| Edit and preview | `⌘E` |
 | Search in all files | `⌘⇧F` |
 | Change theme | `⌘K` then `⌘T` |
 | Toggle the left sidebar | `⌘\` |

@@ -9,7 +9,7 @@ const WELCOME: &str = r#"# Welcome to Notia
 Notia keeps your notes as plain Markdown files in a folder on your computer: this folder is your **vault**. Everything around the editor — the file list, search, the outline, backlinks, the status bar and every theme — is a *plugin* you can turn off in **Settings → Plugins**.
 
 > [!tip] Start here
-> Press `⌘P` (or `Ctrl+P`) to open the **command palette** and `⌘O` to jump to any note. The button above this note cycles **edit**, **half edit** (Markdown and preview side by side), and **preview**. `⌘E` does the same.
+> Press `⌘P` (or `Ctrl+P`) to open the **command palette** and `⌘O` to jump to any note. The button above this note cycles **edit** and **preview**. `⌘E` does the same. **Split**, which shows both at once, is turned on in **Settings → Editor**.
 
 ## Link your thinking
 
@@ -57,7 +57,7 @@ Drag a sidebar's edge to resize it, and use the buttons in the top corners to hi
 | Command palette | `⌘P` |
 | Quick switcher | `⌘O` |
 | New note | `⌘N` |
-| Cycle edit, half edit, and preview | the button above the note, or `⌘E` |
+| Cycle edit and preview | the button above the note, or `⌘E` |
 | Search in all files | `⌘⇧F` |
 | Change theme | `⌘K` then `⌘T` |
 | Settings | `⌘,` |

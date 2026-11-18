@@ -74,14 +74,17 @@ impl Found {
     }
 }
 
-/// Plugins write `data.json` whenever their settings change, and a `.css`
-/// file is a stylesheet the plugin reads itself. Neither is the plugin's
-/// code, so saving one must not reload it.
+/// Plugins write `data.json` when settings change and `sessions.json` when a
+/// chat is saved. A `.css` file is a stylesheet the plugin reads itself.
+/// None of these is the plugin's code, so saving one must not reload it.
 pub(crate) fn is_data_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| {
-            name == "data.json" || name.ends_with(".notia-tmp") || name.ends_with(".css")
+            name == "data.json"
+                || name == "sessions.json"
+                || name.ends_with(".notia-tmp")
+                || name.ends_with(".css")
         })
 }
 
@@ -215,6 +218,7 @@ mod tests {
 
         let before = found[1].fingerprint.clone();
         fs::write(dir.join("good/data.json"), "{}").unwrap();
+        fs::write(dir.join("good/sessions.json"), "{}").unwrap();
         fs::write(dir.join("good/theme.css"), ".theme { background: #111; }").unwrap();
         assert_eq!(discover(&dir)[1].fingerprint, before);
         let _ = fs::remove_dir_all(&dir);

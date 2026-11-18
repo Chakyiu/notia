@@ -45,11 +45,14 @@ RUN apt-get update \
     && useradd --system --uid 10001 --home-dir /data --create-home notia
 
 COPY --from=build /notia-sync-server /usr/local/bin/notia-sync-server
+COPY docker/sync/entrypoint.sh /usr/local/bin/notia-sync-entrypoint
+RUN chmod 755 /usr/local/bin/notia-sync-entrypoint
 
-USER notia
+# The entrypoint is root so it can hand a root-owned volume to uid 10001.
+# It then replaces itself with notia-sync-server running as that user.
 WORKDIR /data
 EXPOSE 8787
 VOLUME ["/data"]
 
-ENTRYPOINT ["notia-sync-server"]
+ENTRYPOINT ["notia-sync-entrypoint"]
 CMD ["--data", "/data", "--listen", "0.0.0.0:8787"]

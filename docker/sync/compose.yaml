@@ -8,6 +8,10 @@
 # In Notia, Settings → Sync uses http://<this host>:8787 and the same token.
 # The token is the only password. Publish the port only on a private network,
 # or put HTTPS in front of this service.
+#
+# Vaults live in the sync-data volume. On startup the image gives that
+# directory to uid 10001. A root-owned volume otherwise stays up for health
+# checks and fails the first upload with Permission denied (os error 13).
 
 services:
   sync:

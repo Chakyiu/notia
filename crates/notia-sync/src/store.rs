@@ -28,6 +28,10 @@ impl Store {
         fs::create_dir_all(&root).map_err(|error| {
             SyncError::new(format!("could not create {}: {error}", root.display()))
         })?;
+        // An existing directory is not proof we can store vaults. A Docker
+        // volume mounted at this path already exists when it is owned by
+        // root, and the first upload is what used to discover that.
+        ensure_writable(&root)?;
         Ok(Self {
             root,
             max_bytes: max_bytes.max(1),
@@ -106,9 +110,7 @@ impl Store {
             return Ok(StoreWrite::Conflict);
         }
         if let Some(parent) = file.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                SyncError::new(format!("could not create a folder for {path}: {error}"))
-            })?;
+            fs::create_dir_all(parent).map_err(|error| folder_error(path, error))?;
         }
         let temp = file.with_extension("notia-tmp");
         fs::write(&temp, bytes)
@@ -206,6 +208,28 @@ impl Store {
             let _ = fs::remove_file(&temp);
             SyncError::new(format!("could not save the manifest: {error}"))
         })
+    }
+}
+
+fn ensure_writable(root: &Path) -> Result<(), SyncError> {
+    let probe = root.join(".notia-writable");
+    fs::write(&probe, b"").map_err(|error| {
+        SyncError::new(format!(
+            "could not write in {}: {error}. The data folder must be writable by the server user (uid 10001 in Docker)",
+            root.display()
+        ))
+    })?;
+    let _ = fs::remove_file(&probe);
+    Ok(())
+}
+
+fn folder_error(path: &str, error: io::Error) -> SyncError {
+    if error.kind() == io::ErrorKind::PermissionDenied {
+        SyncError::new(format!(
+            "could not create a folder for {path}: {error}. The server's data folder is not writable by the sync process"
+        ))
+    } else {
+        SyncError::new(format!("could not create a folder for {path}: {error}"))
     }
 }
 
@@ -319,6 +343,23 @@ mod tests {
         assert_eq!(store.manifest("Notes").unwrap().generation, Some(3));
         store.delete("Notes", "A.md", &rev.sha256).unwrap();
         assert_eq!(store.manifest("Notes").unwrap().generation, Some(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_refuses_a_data_folder_the_process_cannot_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let error = match Store::open(&locked, 1024) {
+            Ok(_) => panic!("a read-only data folder was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.message().contains("data folder"), "{error}");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]

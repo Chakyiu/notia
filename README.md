@@ -171,6 +171,8 @@ A plugin is written only against this API, so it can live in a repository of its
 ln -s ~/code/my-plugin ~/Notes/.notia/plugins/my-plugin
 ```
 
+Settings → Plugin store installs from the community list. The list is [notia-manifest](https://github.com/Chakyiu/notia-manifest): a `community-plugins.json` file of GitHub repositories. Notia downloads the repository and copies the plugin into `.notia/plugins`, leaving an existing `data.json` in place. Turn the plugin on in Settings → Plugins after it is installed.
+
 Rust plugins implement the `Plugin` trait and register through a `PluginContext`. The core plugins in `crates/notia-plugins` are written only against that public API. A Rust plugin's settings page is a `SettingsTab`, and `Notia::save_plugin_data` keeps its values in `.notia/plugin-data`.
 
 ## Sync

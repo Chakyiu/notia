@@ -8,6 +8,7 @@ use gpui_kit::component::{
     button::Button,
     h_flex,
     setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
+    switch::Switch,
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
@@ -32,7 +33,11 @@ pub(crate) fn open_settings(window: &mut Window, cx: &mut App) {
             files_page(),
         ];
         pages.extend(sync);
-        pages.extend([plugins_page(cx), about_page(cx)]);
+        pages.extend([
+            plugins_page(cx),
+            crate::plugin_catalog::page(),
+            about_page(cx),
+        ]);
         if !plugins.is_empty() {
             pages.push(plugin_separator());
             pages.extend(plugins);
@@ -481,26 +486,17 @@ fn plugins_page(cx: &App) -> SettingPage {
     let mut community = SettingGroup::new()
         .title("Community plugins")
         .description(
-            "Plugins you added. JavaScript plugins live in the vault's .notia/plugins folder, and their code loads only when you turn them on.",
+            "Plugins installed in this vault. Turn one on to load its code. Install more from Plugin store.",
         )
         .item(community_folder_item(
             host.command(RELOAD_COMMUNITY_PLUGINS).is_some(),
         ));
     for (manifest, _) in host.plugins() {
-        let id = manifest.id().clone();
-        let mut description = manifest.description().to_string();
-        if manifest.kind() == PluginKind::Community {
-            let details: Vec<String> = [
-                (!manifest.author().is_empty()).then(|| format!("by {}", manifest.author())),
-                (!manifest.version().is_empty()).then(|| format!("v{}", manifest.version())),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-            if !details.is_empty() {
-                description = format!("{description}\n{}", details.join(" · "));
-            }
+        if manifest.kind() != PluginKind::Core {
+            continue;
         }
+        let id = manifest.id().clone();
+        let description = manifest.description().to_string();
         let mut items = vec![
             SettingItem::new(
                 manifest.name().clone(),
@@ -518,14 +514,97 @@ fn plugins_page(cx: &App) -> SettingPage {
         if let Some(error) = host.error(manifest.id()) {
             items.push(plugin_error_item(error.clone()));
         }
-        match manifest.kind() {
-            PluginKind::Core => core = core.items(items),
-            PluginKind::Community => community = community.items(items),
-        }
+        core = core.items(items);
     }
+    community = community.item(installed_community_plugins(cx));
     SettingPage::new("Plugins")
         .icon(IconName::LayoutDashboard)
         .groups([core, community])
+}
+
+fn installed_community_plugins(cx: &App) -> SettingItem {
+    let mut keywords: Vec<SharedString> = vec!["community".into()];
+    for (manifest, _) in PluginHost::global(cx).plugins() {
+        if manifest.kind() == PluginKind::Community {
+            keywords.push(manifest.name().clone());
+            keywords.push(manifest.id().clone());
+        }
+    }
+    SettingItem::render(|options, _, cx| {
+        let host = PluginHost::global(cx);
+        let rows: Vec<_> = host
+            .plugins()
+            .filter(|(manifest, _)| manifest.kind() == PluginKind::Community)
+            .map(|(manifest, enabled)| {
+                (
+                    manifest.id().clone(),
+                    manifest.name().clone(),
+                    manifest.description().to_string(),
+                    manifest.author().to_string(),
+                    manifest.version().to_string(),
+                    enabled,
+                )
+            })
+            .collect();
+        let errors: Vec<Option<String>> = rows
+            .iter()
+            .map(|(id, ..)| host.error(id).map(|error| error.to_string()))
+            .collect();
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+        let mut list = v_flex().w_full().gap_4();
+        for (row, error) in rows.into_iter().zip(errors) {
+            let (id, name, description, author, version, enabled) = row;
+            let details = [
+                (!author.is_empty()).then(|| format!("by {author}")),
+                (!version.is_empty()).then(|| format!("v{version}")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+            let mut text = v_flex()
+                .min_w_0()
+                .flex_1()
+                .gap_1()
+                .child(div().text_sm().child(name.clone()));
+            if !description.trim().is_empty() {
+                text = text.child(
+                    div()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(description.trim().to_string()),
+                );
+            }
+            if !details.is_empty() {
+                text = text.child(div().text_xs().text_color(muted).child(details));
+            }
+            if let Some(error) = error {
+                let summary = error.lines().next().unwrap_or("").to_string();
+                text = text.child(div().text_sm().text_color(danger).child(summary));
+            }
+            let switch_id = id.clone();
+            list = list.child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(text)
+                    .child(
+                        Switch::new(SharedString::from(format!("community-enabled-{id}")))
+                            .checked(enabled)
+                            .with_size(options.size())
+                            .accessibility_label(format!("Turn on {name}"))
+                            .on_change(move |checked, _, cx| {
+                                PluginHost::set_enabled(&switch_id, *checked, cx);
+                            }),
+                    ),
+            );
+        }
+        list
+    })
+    .keywords(keywords)
 }
 
 fn community_folder_item(loader_enabled: bool) -> SettingItem {

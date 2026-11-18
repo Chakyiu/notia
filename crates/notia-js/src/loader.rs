@@ -30,7 +30,7 @@ pub struct CommunityPluginsPlugin;
 impl Plugin for CommunityPluginsPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest::new(LOADER_ID, "Community plugins").with_description(
-            "Lists the JavaScript plugins in the vault's .notia/plugins folder. A plugin's code runs only while it is enabled.",
+            "Lists the JavaScript plugins in the vault's .notia/plugins folder. Install more from Plugin store. A plugin's code runs only while it is enabled.",
         )
     }
 

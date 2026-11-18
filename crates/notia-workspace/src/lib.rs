@@ -11,6 +11,7 @@ mod kanban;
 mod note_editor;
 mod palette;
 mod palette_settings;
+mod plugin_catalog;
 mod reading;
 mod settings_dialog;
 pub mod vaults;

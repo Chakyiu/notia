@@ -96,7 +96,7 @@ A theme file looks like this:
 
 ## Community plugins
 
-Community plugins are written in JavaScript and installed into the vault, like Obsidian's: each is a folder in `.notia/plugins` with a `manifest.json` and a `main.js`. Notia lists a plugin by reading its manifest and loads its code only once you turn it on in **Settings → Plugins**; turning it off unloads it again. Save a plugin's files and it reloads.
+Community plugins are written in JavaScript and installed into the vault, like Obsidian's: each is a folder in `.notia/plugins` with a `manifest.json` and a `main.js`. Notia lists a plugin by reading its manifest and loads its code only once you turn it on in **Settings → Plugins**; turning it off unloads it again. Save a plugin's files and it reloads. **Settings → Plugin store** installs plugins from the notia-manifest list.
 
 A plugin looks like this:
 

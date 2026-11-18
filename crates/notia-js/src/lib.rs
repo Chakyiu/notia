@@ -47,6 +47,11 @@ pub fn register(cx: &mut App) {
     PluginHost::register(CommunityPluginsPlugin, cx);
 }
 
+/// Re-reads `.notia/plugins` and registers plugins that were added or changed.
+pub fn reload_community_plugins(cx: &mut App) {
+    loader::reload(cx);
+}
+
 /// A Lucide icon by name, such as `dices` or `chart-pie`, or a puzzle piece
 /// for names Notia does not know.
 fn icon(name: Option<&str>) -> Icon {

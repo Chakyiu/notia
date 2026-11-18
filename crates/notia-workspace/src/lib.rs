@@ -14,6 +14,7 @@ mod palette_settings;
 mod plugin_catalog;
 mod reading;
 mod settings_dialog;
+mod update;
 pub mod vaults;
 mod workspace;
 
@@ -141,6 +142,7 @@ pub fn open_window(options: WindowOptions, cx: &mut App) -> anyhow::Result<AnyWi
         window.activate_window();
         window.set_window_title(&title);
     })?;
+    update::on_launch(cx);
     Ok(window)
 }
 

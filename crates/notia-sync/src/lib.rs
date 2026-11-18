@@ -23,7 +23,7 @@ pub use snapshot::{FileRev, Manifest};
 pub use store::Store;
 
 #[cfg(feature = "client")]
-pub use sync::{SyncOptions, SyncReport, probe, sync_vault};
+pub use sync::{RemoteCursor, SyncOptions, SyncReport, probe, remote_cursor, sync_vault};
 
 #[cfg(feature = "server")]
 pub use serve::{Listener, bind};

@@ -25,6 +25,10 @@ pub struct FileRev {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub files: BTreeMap<String, FileRev>,
+    /// How many times files in this vault have been stored. A server from
+    /// before this field leaves it out; a current server always sends a number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
 }
 
 #[derive(Debug)]

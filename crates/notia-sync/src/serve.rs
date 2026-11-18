@@ -4,6 +4,8 @@
 //! `Authorization: Bearer <token>` and `X-Notia-Vault`, which is the vault id
 //! percent-encoded. Uploads and deletes name the hash the client last read in
 //! `X-Notia-Base`, and the server refuses the write when that hash is stale.
+//! `GET /v1/head` returns how many times the vault has changed, so a client
+//! can watch it without downloading every file.
 
 use std::io::Read as _;
 
@@ -38,6 +40,7 @@ impl Listener {
 
 enum Route {
     Health,
+    Head,
     Manifest,
     File(String),
     BadPath,
@@ -145,6 +148,7 @@ fn dispatch(
         Route::Health => Reply::error(500, "unreachable"),
         Route::Unknown => Reply::error(404, "not found"),
         Route::BadPath => Reply::error(400, "that path is not allowed"),
+        Route::Head => head(store, method, &vault),
         Route::Manifest => manifest(store, method, &vault),
         Route::File(path) => file(
             store,
@@ -158,12 +162,31 @@ fn dispatch(
     }
 }
 
+fn head(store: &Store, method: &str, vault: &str) -> Reply {
+    if method != "GET" {
+        return Reply::error(405, "method not allowed");
+    }
+    match store.manifest(vault) {
+        Ok(manifest) => Reply::json(
+            200,
+            serde_json::json!({ "generation": manifest.generation.unwrap_or(0) }),
+        ),
+        Err(error) => Reply::error(400, error.message()),
+    }
+}
+
 fn manifest(store: &Store, method: &str, vault: &str) -> Reply {
     if method != "GET" {
         return Reply::error(405, "method not allowed");
     }
     match store.manifest(vault) {
-        Ok(manifest) => Reply::json(200, serde_json::json!({ "files": manifest.files })),
+        Ok(manifest) => Reply::json(
+            200,
+            serde_json::json!({
+                "generation": manifest.generation.unwrap_or(0),
+                "files": manifest.files,
+            }),
+        ),
         Err(error) => Reply::error(400, error.message()),
     }
 }
@@ -209,7 +232,9 @@ fn file(
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0);
             match store.put(vault, path, &body, mtime, base.as_deref()) {
-                Ok(StoreWrite::Applied(rev)) => Reply::json(200, rev_json(&rev)),
+                Ok(StoreWrite::Applied(rev)) => {
+                    applied(200, rev_json(&rev), vault_generation(store, vault))
+                }
                 Ok(StoreWrite::Conflict) => {
                     Reply::error(412, "the file changed and will be merged on the next sync")
                 }
@@ -234,12 +259,9 @@ fn file(
                 Err(error) => return Reply::error(400, error.message()),
             };
             match store.delete(vault, path, &base) {
-                Ok(StoreWrite::Applied(_)) => Reply {
-                    status: 204,
-                    content_type: "application/json",
-                    body: Vec::new(),
-                    extra: Vec::new(),
-                },
+                Ok(StoreWrite::Applied(_)) => {
+                    applied(204, serde_json::Value::Null, vault_generation(store, vault))
+                }
                 Ok(StoreWrite::Conflict) => {
                     Reply::error(412, "the file changed and will be merged on the next sync")
                 }
@@ -274,6 +296,36 @@ fn read_body(request: &mut tiny_http::Request, max_bytes: u64) -> Result<Vec<u8>
     Ok(body)
 }
 
+fn vault_generation(store: &Store, vault: &str) -> u64 {
+    store
+        .manifest(vault)
+        .ok()
+        .and_then(|manifest| manifest.generation)
+        .unwrap_or(0)
+}
+
+/// A write that landed. The generation header tells a watching client that
+/// this vault moved, including a delete, which has no JSON body.
+fn applied(status: u16, mut body: serde_json::Value, generation: u64) -> Reply {
+    if let Some(object) = body.as_object_mut() {
+        object.insert("generation".into(), serde_json::json!(generation));
+    }
+    let mut reply = if status == 204 {
+        Reply {
+            status,
+            content_type: "application/json",
+            body: Vec::new(),
+            extra: Vec::new(),
+        }
+    } else {
+        Reply::json(status, body)
+    };
+    reply
+        .extra
+        .push(("X-Notia-Generation".into(), generation.to_string()));
+    reply
+}
+
 fn rev_json(rev: &FileRev) -> serde_json::Value {
     serde_json::json!({
         "sha256": rev.sha256,
@@ -290,6 +342,9 @@ fn route(url: &str) -> Route {
     }
     if path == "/v1/health" {
         return Route::Health;
+    }
+    if path == "/v1/head" {
+        return Route::Head;
     }
     if path == "/v1/manifest" {
         return Route::Manifest;

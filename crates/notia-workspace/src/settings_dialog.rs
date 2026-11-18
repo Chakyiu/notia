@@ -1,7 +1,5 @@
 //! The settings dialog.
 
-use std::time::Duration;
-
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
@@ -677,41 +675,40 @@ fn plugin_error_item(error: SharedString) -> SettingItem {
 
 fn about_page(cx: &App) -> SettingPage {
     let vault = Notia::vault(cx).read(cx).vault().root().to_path_buf();
+    let mut items = vec![SettingItem::render(|_, _, cx| {
+        v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Notia"),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+            )
+    })];
+    items.extend(crate::update::items());
+    items.push(github_item());
+    items.push(license_item());
+    items.push(SettingItem::new(
+        "Vault",
+        SettingField::render(move |options, _, _| {
+            let vault = vault.clone();
+            Button::new("reveal-vault")
+                .outline()
+                .icon(IconName::FolderOpen)
+                .label(vault.display().to_string())
+                .with_size(options.size())
+                .on_click(move |_, _, cx| cx.open_with_system(&vault))
+        }),
+    ));
     SettingPage::new("About")
         .icon(IconName::Info)
-        .group(SettingGroup::new().items(vec![
-            SettingItem::render(|_, _, cx| {
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Notia"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
-                    )
-            }),
-            update_item(),
-            github_item(),
-            license_item(),
-            SettingItem::new(
-                "Vault",
-                SettingField::render(move |options, _, _| {
-                    let vault = vault.clone();
-                    Button::new("reveal-vault")
-                        .outline()
-                        .icon(IconName::FolderOpen)
-                        .label(vault.display().to_string())
-                        .with_size(options.size())
-                        .on_click(move |_, _, cx| cx.open_with_system(&vault))
-                }),
-            ),
-        ]))
+        .group(SettingGroup::new().items(items))
 }
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
@@ -763,320 +760,12 @@ fn copyright_line() -> &'static str {
         .unwrap_or("MIT License")
 }
 
-/// The latest-release check. Dropping `task` cancels it, which happens when
-/// About leaves the screen.
-struct UpdateState {
-    phase: UpdatePhase,
-    task: Option<Task<()>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum UpdatePhase {
-    Idle,
-    Checking,
-    Current,
-    Available { version: String, url: String },
-    Unpublished,
-    Failed(String),
-}
-
-fn update_item() -> SettingItem {
-    SettingItem::new(
-        "Updates",
-        SettingField::render(|options, window, cx| {
-            let state = window.use_keyed_state("notia-update-check", cx, |_, _| UpdateState {
-                phase: UpdatePhase::Idle,
-                task: None,
-            });
-            let phase = state.read(cx).phase.clone();
-            let checking = matches!(phase, UpdatePhase::Checking);
-            h_flex()
-                .gap_2()
-                .items_center()
-                .flex_wrap()
-                .when_some(update_status(&phase), |row, message| {
-                    let color = if matches!(phase, UpdatePhase::Available { .. }) {
-                        cx.theme().foreground
-                    } else {
-                        cx.theme().muted_foreground
-                    };
-                    row.child(div().text_sm().text_color(color).child(message))
-                })
-                .when_some(update_download(&phase), |row, url| {
-                    row.child(
-                        Button::new("open-update")
-                            .outline()
-                            .icon(IconName::ExternalLink)
-                            .label("Open release")
-                            .with_size(options.size())
-                            .on_click(move |_, _, cx| cx.open_url(&url)),
-                    )
-                })
-                .child(
-                    Button::new("check-for-updates")
-                        .outline()
-                        .icon(IconName::RefreshCw)
-                        .label(update_button_label(&phase))
-                        .with_size(options.size())
-                        .disabled(checking)
-                        .on_click({
-                            let state = state.clone();
-                            move |_, _, cx| start_update_check(&state, cx)
-                        }),
-                )
-        }),
-    )
-    .keywords(["update", "release"])
-}
-
-fn update_status(phase: &UpdatePhase) -> Option<String> {
-    match phase {
-        UpdatePhase::Idle | UpdatePhase::Checking => None,
-        UpdatePhase::Current => Some("This is the latest release.".into()),
-        UpdatePhase::Available { version, .. } => Some(format!("Version {version} is available.")),
-        UpdatePhase::Unpublished => Some("No release has been published.".into()),
-        UpdatePhase::Failed(message) => Some(message.clone()),
-    }
-}
-
-fn update_download(phase: &UpdatePhase) -> Option<String> {
-    match phase {
-        UpdatePhase::Available { url, .. } => Some(url.clone()),
-        _ => None,
-    }
-}
-
-fn update_button_label(phase: &UpdatePhase) -> &'static str {
-    match phase {
-        UpdatePhase::Idle => "Check for updates",
-        UpdatePhase::Checking => "Checking…",
-        UpdatePhase::Failed(_) => "Try again",
-        _ => "Check again",
-    }
-}
-
-fn start_update_check(state: &Entity<UpdateState>, cx: &mut App) {
-    state.update(cx, |this, cx| {
-        if matches!(this.phase, UpdatePhase::Checking) {
-            return;
-        }
-        this.phase = UpdatePhase::Checking;
-        this.task = Some(cx.spawn(async move |this, cx| {
-            let phase = cx
-                .background_executor()
-                .spawn(async { fetch_latest_release() })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.task = None;
-                this.phase = phase;
-                cx.notify();
-            });
-        }));
-        cx.notify();
-    });
-}
-
-fn fetch_latest_release() -> UpdatePhase {
-    let Some(endpoint) = github_api_latest() else {
-        return UpdatePhase::Failed("Updates are published on GitHub.".into());
-    };
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(20)))
-        .http_status_as_error(false)
-        .build()
-        .into();
-    let response = agent
-        .get(&endpoint)
-        .header("User-Agent", concat!("Notia/", env!("CARGO_PKG_VERSION")))
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .call();
-    match response {
-        Ok(mut response) => {
-            let status = response.status().as_u16();
-            match response
-                .body_mut()
-                .with_config()
-                .limit(256 * 1024)
-                .read_to_vec()
-            {
-                Ok(body) => interpret_release(status, &body),
-                Err(error) => {
-                    log::warn!("could not read the GitHub release: {error}");
-                    UpdatePhase::Failed("Could not reach GitHub.".into())
-                }
-            }
-        }
-        Err(error) => {
-            log::warn!("could not check for updates: {error}");
-            UpdatePhase::Failed("Could not reach GitHub.".into())
-        }
-    }
-}
-
-fn github_api_latest() -> Option<String> {
-    let path = repository_url().strip_prefix("https://github.com/")?;
-    let mut parts = path.split('/');
-    let owner = parts.next()?;
-    let name = parts.next()?;
-    if parts.next().is_some() || !is_github_name(owner) || !is_github_name(name) {
-        return None;
-    }
-    Some(format!(
-        "https://api.github.com/repos/{owner}/{name}/releases/latest"
-    ))
-}
-
-fn is_github_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-}
-
-/// A release page is opened only when it stays on this repository.
-fn trusted_release_url(url: &str) -> String {
-    let releases = format!("{}/releases", repository_url());
-    if url == releases || url.starts_with(&format!("{releases}/")) {
-        url.to_string()
-    } else {
-        releases
-    }
-}
-
-fn interpret_release(status: u16, body: &[u8]) -> UpdatePhase {
-    if status == 404 {
-        return UpdatePhase::Unpublished;
-    }
-    if status == 403 || status == 429 {
-        return UpdatePhase::Failed("GitHub is limiting update checks. Try again later.".into());
-    }
-    if status != 200 {
-        return UpdatePhase::Failed("GitHub returned an unexpected reply.".into());
-    }
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return UpdatePhase::Failed("GitHub returned an unexpected reply.".into());
-    };
-    let Some(version) = value
-        .get("tag_name")
-        .and_then(|tag| tag.as_str())
-        .and_then(display_version)
-    else {
-        return UpdatePhase::Failed("GitHub returned an unexpected reply.".into());
-    };
-    let url = trusted_release_url(
-        value
-            .get("html_url")
-            .and_then(|url| url.as_str())
-            .unwrap_or(""),
-    );
-    if is_newer(&version, env!("CARGO_PKG_VERSION")) {
-        UpdatePhase::Available { version, url }
-    } else {
-        UpdatePhase::Current
-    }
-}
-
-fn display_version(tag: &str) -> Option<String> {
-    let version = tag.trim().strip_prefix('v').unwrap_or(tag.trim());
-    if version.is_empty()
-        || version.len() > 40
-        || !version
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
-        || numeric_version(version).is_none()
-    {
-        return None;
-    }
-    Some(version.to_string())
-}
-
-fn numeric_version(version: &str) -> Option<Vec<u64>> {
-    let core = version.split(['-', '+']).next().unwrap_or(version);
-    if core.is_empty() {
-        return None;
-    }
-    let mut parts = Vec::new();
-    for part in core.split('.') {
-        if part.is_empty() {
-            return None;
-        }
-        parts.push(part.parse().ok()?);
-    }
-    Some(parts)
-}
-
-fn is_newer(latest: &str, current: &str) -> bool {
-    let Some(latest) = numeric_version(latest.trim().trim_start_matches('v')) else {
-        return false;
-    };
-    let Some(current) = numeric_version(current.trim().trim_start_matches('v')) else {
-        return false;
-    };
-    let len = latest.len().max(current.len());
-    for ix in 0..len {
-        let left = latest.get(ix).copied().unwrap_or(0);
-        let right = current.get(ix).copied().unwrap_or(0);
-        if left != right {
-            return left > right;
-        }
-    }
-    false
-}
-
 #[cfg(test)]
-mod update_tests {
-    use super::{UpdatePhase, copyright_line, github_api_latest, interpret_release, is_newer};
+mod tests {
+    use super::copyright_line;
 
     #[test]
-    fn version_order() {
-        assert!(is_newer("0.2.4", "0.2.3"));
-        assert!(is_newer("v0.10.0", "0.2.3"));
-        assert!(is_newer("1.0.0", "0.9.9"));
-        assert!(is_newer("0.2", "0.1.9"));
-        assert!(!is_newer("0.2.3", "0.2.3"));
-        assert!(!is_newer("v0.2.3", "0.2.3"));
-        assert!(!is_newer("0.2.2", "0.2.3"));
-        assert!(!is_newer("0.2.3-beta", "0.2.3"));
-        assert!(!is_newer("0.2", "0.2.0"));
-    }
-
-    #[test]
-    fn release_response() {
-        let body = br#"{"tag_name":"v9.0.0","html_url":"https://github.com/Chakyiu/notia/releases/tag/v9.0.0"}"#;
-        assert_eq!(
-            interpret_release(200, body),
-            UpdatePhase::Available {
-                version: "9.0.0".into(),
-                url: "https://github.com/Chakyiu/notia/releases/tag/v9.0.0".into(),
-            }
-        );
-        assert_eq!(
-            interpret_release(
-                200,
-                br#"{"tag_name":"v0.0.1","html_url":"https://github.com/Chakyiu/notia/releases/tag/v0.0.1"}"#
-            ),
-            UpdatePhase::Current
-        );
-        assert_eq!(interpret_release(404, b""), UpdatePhase::Unpublished);
-        assert_eq!(
-            interpret_release(
-                200,
-                br#"{"tag_name":"v9.0.0","html_url":"https://example.com/evil"}"#
-            ),
-            UpdatePhase::Available {
-                version: "9.0.0".into(),
-                url: "https://github.com/Chakyiu/notia/releases".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn github_endpoint_uses_the_repository() {
-        assert_eq!(
-            github_api_latest().as_deref(),
-            Some("https://api.github.com/repos/Chakyiu/notia/releases/latest")
-        );
+    fn copyright_line_names_the_holder() {
         assert_eq!(copyright_line(), "Copyright (c) 2026 chakyiu");
     }
 }

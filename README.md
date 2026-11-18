@@ -56,6 +56,8 @@ The macOS app is signed ad hoc, and the Windows executable is unsigned, so the s
 xattr -dr com.apple.quarantine /Applications/Notia.app
 ```
 
+In **Settings → About**, **Update** downloads the release for this computer, replaces this copy, and restarts. **Update automatically** does that when Notia opens. A copy built with `cargo run` is left in place.
+
 Running the workflow by hand, without a tag, builds the same images and keeps them as workflow artifacts.
 
 ## Phone
@@ -187,6 +189,8 @@ cargo build -p notia-sync --bin notia-sync-server --release
 ```
 
 The first run writes a token to `notia-sync-data/token` and prints it. In **Settings → Sync**, set the server address, such as `http://192.168.1.20:8787`, and that token. Computers that share a vault use the same vault id. Leave the id empty to use the vault folder's name.
+
+**Real-time sync** sends a file as soon as it is saved, and checks the server every second so an edit from another computer shows up here. The check is a small request. The files move only when something changed. Turn it on under Settings → Sync. An older server still syncs; it is checked by reading the file list instead.
 
 `docker/sync` is a Compose example. Copy `.env.example` to `.env`, set `NOTIA_SYNC_TOKEN`, and run `docker compose up --build -d` from that directory. Vaults are stored in the `sync-data` volume.
 

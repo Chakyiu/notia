@@ -118,6 +118,7 @@ impl Store {
             SyncError::new(format!("could not write {path}: {error}"))
         })?;
         manifest.files.insert(path.to_string(), next.clone());
+        bump_generation(&mut manifest);
         self.save_manifest(vault, &manifest)?;
         Ok(StoreWrite::Applied(next))
     }
@@ -144,6 +145,7 @@ impl Store {
             return Ok(StoreWrite::Conflict);
         }
         manifest.files.remove(path);
+        bump_generation(&mut manifest);
         self.save_manifest(vault, &manifest)?;
         match fs::remove_file(&file) {
             Ok(()) => {}
@@ -205,6 +207,10 @@ impl Store {
             SyncError::new(format!("could not save the manifest: {error}"))
         })
     }
+}
+
+fn bump_generation(manifest: &mut Manifest) {
+    manifest.generation = Some(manifest.generation.unwrap_or(0).saturating_add(1));
 }
 
 /// Hashes the store is willing to treat as a base the client last read.
@@ -280,6 +286,39 @@ mod tests {
         assert_eq!(result, StoreWrite::Conflict);
         let (_, bytes) = store.get("Notes", "A.md").unwrap().unwrap();
         assert_eq!(bytes, b"one");
+    }
+
+    #[test]
+    fn generation_advances_only_when_the_stored_file_changes() {
+        let (_dir, store) = store();
+        assert_eq!(store.manifest("Notes").unwrap().generation, None);
+
+        let StoreWrite::Applied(first) = store.put("Notes", "A.md", b"one", 1, None).unwrap()
+        else {
+            panic!("expected the first write to apply");
+        };
+        assert_eq!(store.manifest("Notes").unwrap().generation, Some(1));
+
+        store.put("Notes", "A.md", b"one", 1, None).unwrap();
+        assert_eq!(store.manifest("Notes").unwrap().generation, Some(1));
+
+        let conflict = store
+            .put("Notes", "A.md", b"two", 1, Some(&"ab".repeat(32)))
+            .unwrap();
+        assert_eq!(conflict, StoreWrite::Conflict);
+        assert_eq!(store.manifest("Notes").unwrap().generation, Some(1));
+
+        let StoreWrite::Applied(rev) = store
+            .put("Notes", "A.md", b"two", 2, Some(&first.sha256))
+            .unwrap()
+        else {
+            panic!("expected the write to apply");
+        };
+        assert_eq!(store.manifest("Notes").unwrap().generation, Some(2));
+        store.delete("Notes", "A.md", &rev.sha256).unwrap();
+        assert_eq!(store.manifest("Notes").unwrap().generation, Some(3));
+        store.delete("Notes", "A.md", &rev.sha256).unwrap();
+        assert_eq!(store.manifest("Notes").unwrap().generation, Some(3));
     }
 
     #[test]

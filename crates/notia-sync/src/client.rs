@@ -13,8 +13,18 @@ pub(crate) struct SyncClient {
 }
 
 pub(crate) enum WriteResult {
-    Applied(FileRev),
+    Applied {
+        rev: FileRev,
+        /// Present when the server names the vault generation after the write.
+        generation: Option<u64>,
+    },
     Rejected,
+}
+
+struct HttpResponse {
+    status: u16,
+    body: Vec<u8>,
+    generation: Option<u64>,
 }
 
 pub(crate) fn normalize_server(url: &str) -> Result<String, SyncError> {
@@ -72,30 +82,50 @@ impl SyncClient {
     }
 
     pub(crate) fn manifest(&self) -> Result<Manifest, SyncError> {
-        let (status, body) =
-            self.exchange(self.auth(self.agent.get(self.url("v1/manifest"))).call())?;
-        if status == 200 {
-            return serde_json::from_slice(&body).map_err(|error| {
+        let response = self.exchange(self.auth(self.agent.get(self.url("v1/manifest"))).call())?;
+        if response.status == 200 {
+            return serde_json::from_slice(&response.body).map_err(|error| {
                 SyncError::new(format!(
                     "the server sent a manifest that could not be read: {error}"
                 ))
             });
         }
-        Err(status_error(status, &body))
+        Err(status_error(response.status, &response.body))
+    }
+
+    /// `None` when this server has no `/v1/head` (it answers 404).
+    pub(crate) fn head(&self) -> Result<Option<u64>, SyncError> {
+        let response = self.exchange(self.auth(self.agent.get(self.url("v1/head"))).call())?;
+        if response.status == 404 {
+            return Ok(None);
+        }
+        if response.status == 200 {
+            let value: serde_json::Value =
+                serde_json::from_slice(&response.body).map_err(|error| {
+                    SyncError::new(format!(
+                        "the server sent a head that could not be read: {error}"
+                    ))
+                })?;
+            let generation = value
+                .get("generation")
+                .and_then(|generation| generation.as_u64())
+                .ok_or_else(|| SyncError::new("the server sent a head that could not be read"))?;
+            return Ok(Some(generation));
+        }
+        Err(status_error(response.status, &response.body))
     }
 
     pub(crate) fn download(&self, path: &str) -> Result<Vec<u8>, SyncError> {
-        let (status, body) =
-            self.exchange(self.auth(self.agent.get(self.file_url(path))).call())?;
-        if status == 200 {
-            if body.len() as u64 > self.max_bytes {
+        let response = self.exchange(self.auth(self.agent.get(self.file_url(path))).call())?;
+        if response.status == 200 {
+            if response.body.len() as u64 > self.max_bytes {
                 return Err(SyncError::new(format!(
                     "{path} is larger than this app will sync"
                 )));
             }
-            return Ok(body);
+            return Ok(response.body);
         }
-        Err(status_error(status, &body))
+        Err(status_error(response.status, &response.body))
     }
 
     pub(crate) fn upload(
@@ -112,9 +142,9 @@ impl SyncClient {
         if let Some(base) = base {
             request = request.header("X-Notia-Base", base);
         }
-        let (status, body) = self.exchange(request.send(bytes))?;
-        if status == 200 {
-            let rev: FileRev = serde_json::from_slice(&body).map_err(|error| {
+        let response = self.exchange(request.send(bytes))?;
+        if response.status == 200 {
+            let rev: FileRev = serde_json::from_slice(&response.body).map_err(|error| {
                 SyncError::new(format!(
                     "the server accepted {path} but the reply was unreadable: {error}"
                 ))
@@ -124,31 +154,41 @@ impl SyncClient {
                     "the server stored a different copy of {path}"
                 )));
             }
-            return Ok(WriteResult::Applied(rev));
+            return Ok(WriteResult::Applied {
+                rev,
+                generation: response
+                    .generation
+                    .or_else(|| json_generation(&response.body)),
+            });
         }
-        if status == 409 || status == 412 {
+        if response.status == 409 || response.status == 412 {
             return Ok(WriteResult::Rejected);
         }
-        Err(status_error(status, &body))
+        Err(status_error(response.status, &response.body))
     }
 
     pub(crate) fn delete(&self, path: &str, base: &str) -> Result<WriteResult, SyncError> {
-        let (status, body) = self.exchange(
+        let response = self.exchange(
             self.auth(self.agent.delete(self.file_url(path)))
                 .header("X-Notia-Base", base)
                 .call(),
         )?;
-        if status == 200 || status == 204 {
-            return Ok(WriteResult::Applied(FileRev {
-                sha256: String::new(),
-                size: 0,
-                mtime_ms: 0,
-            }));
+        if response.status == 200 || response.status == 204 {
+            return Ok(WriteResult::Applied {
+                rev: FileRev {
+                    sha256: String::new(),
+                    size: 0,
+                    mtime_ms: 0,
+                },
+                generation: response
+                    .generation
+                    .or_else(|| json_generation(&response.body)),
+            });
         }
-        if status == 409 || status == 412 {
+        if response.status == 409 || response.status == 412 {
             return Ok(WriteResult::Rejected);
         }
-        Err(status_error(status, &body))
+        Err(status_error(response.status, &response.body))
     }
 
     fn auth<T>(&self, request: ureq::RequestBuilder<T>) -> ureq::RequestBuilder<T> {
@@ -172,12 +212,17 @@ impl SyncClient {
     fn exchange(
         &self,
         result: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
-    ) -> Result<(u16, Vec<u8>), SyncError> {
+    ) -> Result<HttpResponse, SyncError> {
         let mut response = result.map_err(|error| match error {
             ureq::Error::StatusCode(status) => status_error(status, &[]),
             other => SyncError::new(format!("could not reach the server: {other}")),
         })?;
         let status = response.status().as_u16();
+        let generation = response
+            .headers()
+            .get("x-notia-generation")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse().ok());
         let limit = if status == 200 {
             self.max_bytes.max(8 * 1024 * 1024)
         } else {
@@ -191,8 +236,18 @@ impl SyncClient {
             .map_err(|error| {
                 SyncError::new(format!("could not read the server's reply: {error}"))
             })?;
-        Ok((status, body))
+        Ok(HttpResponse {
+            status,
+            body,
+            generation,
+        })
     }
+}
+
+fn json_generation(body: &[u8]) -> Option<u64> {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("generation")?.as_u64())
 }
 
 fn status_error(status: u16, body: &[u8]) -> SyncError {

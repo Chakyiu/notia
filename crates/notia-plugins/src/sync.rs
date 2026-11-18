@@ -14,13 +14,20 @@ use notia_plugin::{
     Command, Notia, Plugin, PluginContext, PluginManifest, RibbonItem, Setting, SettingsSection,
     SettingsTab, StatusItem,
 };
-use notia_sync::{MAX_FILE_BYTES, SyncOptions, probe, sync_vault};
+use notia_sync::{MAX_FILE_BYTES, RemoteCursor, SyncOptions, probe, remote_cursor, sync_vault};
 use serde::{Deserialize, Deserializer, Serialize};
 
 const PLUGIN_ID: &str = "sync";
 const NEED_SERVER: &str = "Add a server in Settings → Sync";
 /// How many notices stay in the pile. Older ones drop off the back.
 const MAX_NOTICES: usize = 4;
+/// Wait after a local change so a burst of saves becomes one sync.
+const AFTER_CHANGE: Duration = Duration::from_secs(2);
+/// Real-time sync waits only long enough to fold one save's writes together.
+const REALTIME_AFTER_CHANGE: Duration = Duration::from_millis(300);
+/// After a real-time sync fails, wait before asking the server again.
+const REALTIME_RETRY: Duration = Duration::from_secs(5);
+const OPEN_DELAY: Duration = Duration::from_secs(3);
 
 pub struct SyncPlugin;
 
@@ -78,6 +85,12 @@ struct SyncController {
     syncing: Option<Task<()>>,
     debounce: Option<Task<()>>,
     check: Option<Task<()>>,
+    /// Server cursor last caught up with. Real-time sync transfers files when it moves.
+    seen: Option<RemoteCursor>,
+    poll: Option<Task<()>>,
+    poll_epoch: u64,
+    retry_after: Option<Instant>,
+    logged_poll_error: Option<String>,
     /// Notices in the pile, oldest first. The newest is the front card.
     notices: Vec<(u64, SharedString)>,
     next_notice: u64,
@@ -98,10 +111,16 @@ impl SyncController {
                 }
             }
         });
+        let first_wait = if SyncSettings::load(cx).real_time {
+            REALTIME_AFTER_CHANGE
+        } else {
+            OPEN_DELAY
+        };
         let debounce = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(3)).await;
+            cx.background_executor().timer(first_wait).await;
             let _ = this.update(cx, |this, cx| {
-                if SyncSettings::load(cx).auto {
+                let settings = SyncSettings::load(cx);
+                if settings.auto || settings.real_time {
                     this.start(None, cx);
                 }
             });
@@ -120,6 +139,11 @@ impl SyncController {
             syncing: None,
             debounce: Some(debounce),
             check: None,
+            seen: None,
+            poll: None,
+            poll_epoch: 0,
+            retry_after: None,
+            logged_poll_error: None,
             notices: Vec::new(),
             next_notice: 0,
             notice_tasks: Vec::new(),
@@ -152,18 +176,30 @@ impl SyncController {
 
     fn on_vault(&mut self, cx: &mut Context<Self>) {
         let settings = SyncSettings::load(cx);
-        if !settings.auto || !settings.configured() {
+        if !settings.configured() || !(settings.auto || settings.real_time) {
             return;
         }
+        let wait = if settings.real_time {
+            REALTIME_AFTER_CHANGE
+        } else {
+            AFTER_CHANGE
+        };
         self.debounce = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(2)).await;
+            cx.background_executor().timer(wait).await;
             let _ = this.update(cx, |this, cx| this.start(None, cx));
         }));
     }
 
     fn on_tick(&mut self, cx: &mut Context<Self>) {
         let settings = SyncSettings::load(cx);
-        if !settings.auto || !settings.configured() || self.busy {
+        if !settings.configured() || self.busy {
+            return;
+        }
+        if settings.real_time {
+            self.watch_server(cx);
+            return;
+        }
+        if !settings.auto {
             return;
         }
         let interval = Duration::from_secs(settings.interval_seconds);
@@ -172,6 +208,57 @@ impl SyncController {
             .is_none_or(|started| started.elapsed() >= interval);
         if due {
             self.start(None, cx);
+        }
+    }
+
+    /// Asks the server whether the vault moved. A full sync runs when it did.
+    fn watch_server(&mut self, cx: &mut Context<Self>) {
+        if self.poll.is_some() || self.retry_after.is_some_and(|time| Instant::now() < time) {
+            return;
+        }
+        let Some(options) = SyncSettings::load(cx).options(cx) else {
+            return;
+        };
+        let epoch = self.poll_epoch;
+        self.poll = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { remote_cursor(&options) })
+                .await;
+            let _ = this.update(cx, |this, cx| this.on_cursor(epoch, result, cx));
+        }));
+    }
+
+    fn on_cursor(
+        &mut self,
+        epoch: u64,
+        result: Result<RemoteCursor, notia_sync::SyncError>,
+        cx: &mut Context<Self>,
+    ) {
+        self.poll = None;
+        if self.poll_epoch != epoch || self.busy || !SyncSettings::load(cx).real_time {
+            return;
+        }
+        if self.retry_after.is_some_and(|time| Instant::now() < time) {
+            return;
+        }
+        match result {
+            Ok(cursor) => {
+                self.logged_poll_error = None;
+                let same = self.seen.as_ref() == Some(&cursor);
+                let retrying = self.retry_after.take().is_some();
+                if same && !retrying {
+                    return;
+                }
+                self.start(None, cx);
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if self.logged_poll_error.as_deref() != Some(message.as_str()) {
+                    log::warn!("sync could not check the server: {message}");
+                    self.logged_poll_error = Some(message);
+                }
+            }
         }
     }
 
@@ -229,8 +316,21 @@ impl SyncController {
         result: Result<notia_sync::SyncReport, notia_sync::SyncError>,
         cx: &mut Context<Self>,
     ) {
+        self.poll_epoch = self.poll_epoch.wrapping_add(1);
         self.busy = false;
         self.syncing = None;
+        let failed = match &result {
+            Ok(report) => {
+                if let Some(cursor) = report.cursor.clone() {
+                    self.seen = Some(cursor);
+                }
+                !report.errors.is_empty()
+            }
+            Err(_) => true,
+        };
+        if SyncSettings::load(cx).real_time {
+            self.retry_after = failed.then(|| Instant::now() + REALTIME_RETRY);
+        }
         let message = match result {
             Ok(report) => {
                 if report.changed_disk() {
@@ -492,6 +592,25 @@ fn settings_page(_: &mut App) -> Vec<SettingsSection> {
                 .with_description(
                     "Sync a few seconds after files change, and on the interval below, while Notia is open.",
                 ),
+                Setting::toggle(
+                    "Real-time sync",
+                    |cx| SyncSettings::load(cx).real_time,
+                    |value, cx| {
+                        edit(cx, |settings| settings.real_time = value);
+                        if value {
+                            if let Some(host) = cx.try_global::<SyncHost>() {
+                                let controller = host.controller.clone();
+                                controller.update(cx, |this, cx| {
+                                    this.retry_after = None;
+                                    this.start(None, cx);
+                                });
+                            }
+                        }
+                    },
+                )
+                .with_description(
+                    "Sync as soon as a file is saved, and check the server every second for changes from other computers.",
+                ),
                 Setting::number(
                     "Interval",
                     1.0..=86_400.0,
@@ -503,19 +622,30 @@ fn settings_page(_: &mut App) -> Vec<SettingsSection> {
                         });
                     },
                 )
-                .with_description("Seconds between syncs."),
+                .with_description(
+                    "Seconds between syncs. Real-time sync checks the server every second instead.",
+                ),
             ]),
     ]
 }
 
 fn edit(cx: &mut App, change: impl FnOnce(&mut SyncSettings)) {
     let mut settings = SyncSettings::load(cx);
+    let connection = settings.connection();
     change(&mut settings);
     settings.interval_seconds = settings.interval_seconds.clamp(1, 86_400);
+    let reset = connection != settings.connection();
     Notia::save_plugin_data(PLUGIN_ID, &settings, cx);
     if let Some(host) = cx.try_global::<SyncHost>() {
         let controller = host.controller.clone();
-        controller.update(cx, |this, cx| this.on_settings(cx));
+        controller.update(cx, |this, cx| {
+            if reset {
+                this.seen = None;
+                this.retry_after = None;
+                this.poll_epoch = this.poll_epoch.wrapping_add(1);
+            }
+            this.on_settings(cx);
+        });
     }
 }
 
@@ -529,6 +659,8 @@ struct SyncSettings {
     vault_id: String,
     #[serde(default = "default_auto")]
     auto: bool,
+    #[serde(default)]
+    real_time: bool,
     interval_seconds: u64,
     #[serde(default)]
     include_config: bool,
@@ -558,6 +690,7 @@ impl Default for SyncSettings {
             token: String::new(),
             vault_id: String::new(),
             auto: default_auto(),
+            real_time: false,
             interval_seconds: default_interval(),
             include_config: false,
         }
@@ -576,6 +709,8 @@ impl<'de> Deserialize<'de> for SyncSettings {
             vault_id: String,
             #[serde(default = "default_auto")]
             auto: bool,
+            #[serde(default)]
+            real_time: bool,
             interval_seconds: Option<u64>,
             /// Older settings stored the interval in minutes.
             interval_minutes: Option<u64>,
@@ -597,6 +732,7 @@ impl<'de> Deserialize<'de> for SyncSettings {
             token: stored.token,
             vault_id: stored.vault_id,
             auto: stored.auto,
+            real_time: stored.real_time,
             interval_seconds,
             include_config: stored.include_config,
         })
@@ -610,6 +746,16 @@ impl SyncSettings {
 
     fn configured(&self) -> bool {
         !self.server_url.trim().is_empty() && !self.token.trim().is_empty()
+    }
+
+    /// The fields that choose which vault on which server this computer talks to.
+    fn connection(&self) -> (String, String, String, bool) {
+        (
+            self.server_url.trim().to_string(),
+            self.token.trim().to_string(),
+            self.vault_id.trim().to_string(),
+            self.include_config,
+        )
     }
 
     fn options(&self, cx: &App) -> Option<SyncOptions> {
@@ -630,5 +776,26 @@ impl SyncSettings {
             include_config: self.include_config,
             max_bytes: MAX_FILE_BYTES,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyncSettings;
+
+    #[test]
+    fn real_time_stays_off_until_it_is_chosen() {
+        let existing: SyncSettings = serde_json::from_str(
+            r#"{"server_url":"http://127.0.0.1:8787","token":"secret","interval_minutes":1}"#,
+        )
+        .unwrap();
+        assert!(!existing.real_time);
+        assert!(existing.auto);
+        assert_eq!(existing.interval_seconds, 60);
+
+        let chosen: SyncSettings =
+            serde_json::from_str(r#"{"real_time":true,"interval_seconds":15}"#).unwrap();
+        assert!(chosen.real_time);
+        assert_eq!(chosen.interval_seconds, 15);
     }
 }

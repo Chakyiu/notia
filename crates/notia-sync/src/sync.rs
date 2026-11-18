@@ -34,6 +34,19 @@ pub struct SyncReport {
     pub conflicts: Vec<String>,
     pub skipped: Vec<String>,
     pub errors: Vec<String>,
+    /// The server's cursor after this sync, when this computer has seen the
+    /// vault the server is holding.
+    pub cursor: Option<RemoteCursor>,
+}
+
+/// A name for the vault on the server. Real-time sync compares these and
+/// transfers files only when the name changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteCursor {
+    /// From `GET /v1/head`. Increases by one each time the server stores a change.
+    Generation(u64),
+    /// Hash of the manifest file list. Used when the server has no generation.
+    Manifest(String),
 }
 
 impl SyncReport {
@@ -95,6 +108,18 @@ pub fn probe(options: &SyncOptions) -> Result<usize, SyncError> {
     Ok(client.manifest()?.files.len())
 }
 
+/// The server's current cursor. Does not transfer files. A server without
+/// `GET /v1/head` is named by a hash of its manifest instead.
+pub fn remote_cursor(options: &SyncOptions) -> Result<RemoteCursor, SyncError> {
+    let client = client(options)?;
+    if let Some(generation) = client.head()? {
+        return Ok(RemoteCursor::Generation(generation));
+    }
+    Ok(RemoteCursor::Manifest(manifest_digest(
+        &client.manifest()?.files,
+    )))
+}
+
 /// Sync `options.root` with the server. A failure to reach the server or to
 /// read the vault returns an error and changes nothing. A failure of one file
 /// is recorded in the report and the other files still sync.
@@ -112,6 +137,7 @@ pub fn sync_vault(options: &SyncOptions) -> Result<SyncReport, SyncError> {
         }
     });
     let remote_manifest = client.manifest()?;
+    let mut server_gen = ServerGen::from_manifest(&remote_manifest);
     let mut remote = BTreeMap::new();
     for (path, rev) in remote_manifest.files {
         if !is_synced(&path, options.include_config) {
@@ -156,8 +182,17 @@ pub fn sync_vault(options: &SyncOptions) -> Result<SyncReport, SyncError> {
             &change,
             &mut next,
             &mut report,
+            &mut server_gen,
         ) {
             report.errors.push(error);
+        }
+    }
+    report.cursor = server_gen.cursor();
+    if report.cursor.is_none() {
+        // The server changed and did not report a generation. Name whatever
+        // it is holding now so the next check can tell this sync from a later one.
+        if let Ok(manifest) = client.manifest() {
+            report.cursor = Some(cursor_of(&manifest));
         }
     }
     next.extend(parked);
@@ -180,6 +215,63 @@ fn conflict_stamp() -> String {
     chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
 }
 
+/// Generation observed on the manifest, updated by each write that reports one.
+struct ServerGen {
+    value: Option<u64>,
+    /// False once a write fails to name a generation, or the manifest had none.
+    live: bool,
+    mutated: bool,
+    prior_digest: String,
+}
+
+impl ServerGen {
+    fn from_manifest(manifest: &crate::Manifest) -> Self {
+        Self {
+            value: manifest.generation,
+            live: manifest.generation.is_some(),
+            mutated: false,
+            prior_digest: manifest_digest(&manifest.files),
+        }
+    }
+
+    fn note_write(&mut self, generation: Option<u64>) {
+        self.mutated = true;
+        match generation {
+            Some(generation) if self.live => {
+                self.value = Some(
+                    self.value
+                        .map_or(generation, |current| current.max(generation)),
+                );
+            }
+            _ => self.live = false,
+        }
+    }
+
+    fn cursor(&self) -> Option<RemoteCursor> {
+        if self.live {
+            if let Some(value) = self.value {
+                return Some(RemoteCursor::Generation(value));
+            }
+        }
+        if !self.mutated {
+            return Some(RemoteCursor::Manifest(self.prior_digest.clone()));
+        }
+        None
+    }
+}
+
+fn cursor_of(manifest: &crate::Manifest) -> RemoteCursor {
+    match manifest.generation {
+        Some(generation) => RemoteCursor::Generation(generation),
+        None => RemoteCursor::Manifest(manifest_digest(&manifest.files)),
+    }
+}
+
+fn manifest_digest(files: &BTreeMap<String, FileRev>) -> String {
+    let body = serde_json::to_vec(files).unwrap_or_default();
+    sha256_of(&body)
+}
+
 fn apply(
     vault: &Vault,
     client: &SyncClient,
@@ -187,6 +279,7 @@ fn apply(
     change: &crate::plan::Change,
     base: &mut BTreeMap<String, FileRev>,
     report: &mut SyncReport,
+    server_gen: &mut ServerGen,
 ) -> Result<(), String> {
     let path = change.path.as_str();
     match change.kind {
@@ -208,7 +301,7 @@ fn apply(
             report.downloaded += 1;
         }
         ChangeKind::Upload => {
-            let Some(rev) = upload_current(
+            let Some(uploaded) = upload_current(
                 vault,
                 client,
                 path,
@@ -219,8 +312,9 @@ fn apply(
             else {
                 return Ok(());
             };
-            base.insert(path.to_string(), rev);
+            base.insert(path.to_string(), uploaded.rev);
             report.uploaded += 1;
+            server_gen.note_write(uploaded.generation);
         }
         ChangeKind::DeleteLocal => {
             let vault_path = VaultPath::new(path);
@@ -246,9 +340,10 @@ fn apply(
                 .delete(path, &remote.sha256)
                 .map_err(|error| error.to_string())?
             {
-                WriteResult::Applied(_) => {
+                WriteResult::Applied { generation, .. } => {
                     base.remove(path);
                     report.deleted_remote += 1;
+                    server_gen.note_write(generation);
                 }
                 WriteResult::Rejected => {
                     report.errors.push(format!(
@@ -272,18 +367,21 @@ fn apply(
             }
             write_file(vault, conflict_path, &bytes, remote.mtime_ms)?;
             report.conflicts.push(path.to_string());
-            if let Some(rev) = upload_current(vault, client, path, Some(remote), max_bytes, report)?
+            if let Some(uploaded) =
+                upload_current(vault, client, path, Some(remote), max_bytes, report)?
             {
-                base.insert(path.to_string(), rev);
+                base.insert(path.to_string(), uploaded.rev);
                 report.uploaded += 1;
+                server_gen.note_write(uploaded.generation);
             }
             match client
                 .upload(conflict_path, &bytes, remote.mtime_ms, None)
                 .map_err(|error| error.to_string())?
             {
-                WriteResult::Applied(rev) => {
+                WriteResult::Applied { rev, generation } => {
                     base.insert(conflict_path.to_string(), rev);
                     report.uploaded += 1;
+                    server_gen.note_write(generation);
                 }
                 WriteResult::Rejected => report.errors.push(format!(
                     "{conflict_path} was already on the server and will be merged on the next sync"
@@ -303,7 +401,7 @@ fn upload_current(
     remote: Option<&FileRev>,
     max_bytes: u64,
     report: &mut SyncReport,
-) -> Result<Option<FileRev>, String> {
+) -> Result<Option<Uploaded>, String> {
     let abs = vault.abs_path(&VaultPath::new(path));
     let bytes = match read_limited(&abs, max_bytes) {
         Ok(bytes) => bytes,
@@ -331,7 +429,7 @@ fn upload_current(
         .upload(path, &bytes, rev.mtime_ms, base)
         .map_err(|error| error.to_string())?
     {
-        WriteResult::Applied(_) => Ok(Some(rev)),
+        WriteResult::Applied { generation, .. } => Ok(Some(Uploaded { rev, generation })),
         WriteResult::Rejected => {
             report.errors.push(format!(
                 "{path} changed on the server and will be merged on the next sync"
@@ -391,11 +489,16 @@ fn sha256_of(bytes: &[u8]) -> String {
     crate::sha256_hex(bytes)
 }
 
+struct Uploaded {
+    rev: FileRev,
+    generation: Option<u64>,
+}
+
 #[cfg(all(test, feature = "server"))]
 mod tests {
     use std::{fs, path::Path, thread, time::Duration};
 
-    use super::{SyncOptions, probe, sync_vault};
+    use super::{RemoteCursor, SyncOptions, probe, remote_cursor, sync_vault};
     use crate::serve::start_test_server;
 
     fn server() -> (String, crate::serve::TestServer) {
@@ -540,6 +643,36 @@ mod tests {
         options.token = "nope".into();
         let error = probe(&options).unwrap_err();
         assert!(error.message().contains("token"), "{error}");
+    }
+
+    #[test]
+    fn a_change_moves_the_cursor_the_other_computer_is_watching() {
+        let (url, _server) = server();
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        write(&a.path().join("Welcome.md"), "hello");
+
+        let synced = sync_vault(&options(a.path(), &url, "live", false)).unwrap();
+        assert!(synced.errors.is_empty(), "{synced:?}");
+        let cursor = remote_cursor(&options(b.path(), &url, "live", false)).unwrap();
+        assert_eq!(cursor, RemoteCursor::Generation(1));
+        assert_eq!(synced.cursor.as_ref(), Some(&cursor));
+
+        let pulled = sync_vault(&options(b.path(), &url, "live", false)).unwrap();
+        assert_eq!(pulled.cursor.as_ref(), Some(&cursor));
+        assert_eq!(read(&b.path().join("Welcome.md")), "hello");
+
+        write(&a.path().join("Welcome.md"), "edited");
+        let again = sync_vault(&options(a.path(), &url, "live", false)).unwrap();
+        assert_eq!(again.cursor, Some(RemoteCursor::Generation(2)));
+        let seen = remote_cursor(&options(b.path(), &url, "live", false)).unwrap();
+        assert_eq!(seen, RemoteCursor::Generation(2));
+        assert_ne!(seen, cursor);
+
+        let updated = sync_vault(&options(b.path(), &url, "live", false)).unwrap();
+        assert!(updated.errors.is_empty(), "{updated:?}");
+        assert_eq!(read(&b.path().join("Welcome.md")), "edited");
+        assert_eq!(updated.cursor, Some(RemoteCursor::Generation(2)));
     }
 
     #[test]

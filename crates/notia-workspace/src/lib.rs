@@ -143,6 +143,7 @@ pub fn open_window(options: WindowOptions, cx: &mut App) -> anyhow::Result<AnyWi
         window.set_window_title(&title);
     })?;
     update::on_launch(cx);
+    plugin_catalog::on_launch(cx);
     Ok(window)
 }
 

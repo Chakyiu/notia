@@ -158,6 +158,9 @@ impl JsSettings {
             Some(Node::Toggle { .. }) => {
                 Setting::toggle(name, self.get(ix, toggle), self.set(ix, toggle))
             }
+            Some(Node::TextInput { secret: true, .. }) => {
+                Setting::secret(name, self.get(ix, text), self.set(ix, text))
+            }
             Some(Node::TextInput { .. }) => {
                 Setting::text(name, self.get(ix, text), self.set(ix, text))
             }
@@ -482,6 +485,19 @@ mod tests {
         }
         assert!(matches!(links[1].control(), SettingControl::Text(_)));
         assert!(matches!(links[2].control(), SettingControl::Custom(_)));
+    }
+
+    #[test]
+    fn a_secret_text_input_is_not_a_plain_field() {
+        let sections = sections(
+            r#"{ "type": "setting", "name": "API key",
+                "control": { "type": "text_input", "value": "sk-test", "secret": true, "onChange": 0 } }"#,
+        );
+        assert_eq!(sections[0].items()[0].name().as_ref(), "API key");
+        assert!(matches!(
+            sections[0].items()[0].control(),
+            SettingControl::Secret(_)
+        ));
     }
 
     #[test]

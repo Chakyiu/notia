@@ -438,6 +438,7 @@ impl JsRuntime {
         request: crate::http::Request,
         cx: &mut App,
     ) -> Result<Value, String> {
+        let stream = request.stream;
         let prepared = crate::http::prepare(request)?;
         {
             let mut state = self.state.borrow_mut();
@@ -448,16 +449,64 @@ impl JsRuntime {
         }
         let js = Rc::downgrade(self);
         cx.spawn(async move |cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { crate::http::perform(prepared) })
-                .await;
+            let result = if stream {
+                let (tx, rx) = std::sync::mpsc::channel::<String>();
+                let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let flag = done.clone();
+                let read = cx.background_executor().spawn(async move {
+                    let result = crate::http::perform_stream(prepared, |chunk| {
+                        let _ = tx.send(chunk.to_string());
+                    });
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    result
+                });
+                loop {
+                    let mut batch = String::new();
+                    while let Ok(chunk) = rx.try_recv() {
+                        batch.push_str(&chunk);
+                    }
+                    if !batch.is_empty()
+                        && let Some(js) = js.upgrade()
+                    {
+                        let _ = cx.update(|cx| js.stream_chunk(id, batch, cx));
+                    }
+                    if done.load(std::sync::atomic::Ordering::SeqCst) {
+                        let mut batch = String::new();
+                        while let Ok(chunk) = rx.try_recv() {
+                            batch.push_str(&chunk);
+                        }
+                        if !batch.is_empty()
+                            && let Some(js) = js.upgrade()
+                        {
+                            let _ = cx.update(|cx| js.stream_chunk(id, batch, cx));
+                        }
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(16))
+                        .await;
+                }
+                read.await
+            } else {
+                cx.background_executor()
+                    .spawn(async move { crate::http::perform(prepared) })
+                    .await
+            };
             if let Some(js) = js.upgrade() {
                 cx.update(|cx| js.finish_request(id, result, cx));
             }
         })
         .detach();
         Ok(Value::Null)
+    }
+
+    fn stream_chunk(&self, id: u64, chunk: String, cx: &mut App) {
+        if self.unloaded.get() || chunk.is_empty() {
+            return;
+        }
+        if let Err(error) = self.dispatch("request-chunk", &id.to_string(), &chunk, cx) {
+            self.report(&error, cx);
+        }
     }
 
     fn finish_request(&self, id: u64, result: Result<Value, String>, cx: &mut App) {

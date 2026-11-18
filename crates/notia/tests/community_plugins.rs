@@ -557,6 +557,16 @@ export default class extends Plugin {{
         );
     }
 
+    // The sync token is a secret: the field hides it until the user shows it.
+    let sync = app.settings_tab("sync");
+    assert!(
+        matches!(
+            find(&app.sections(&sync), "Token").control(),
+            SettingControl::Secret(_)
+        ),
+        "the sync token stays hidden until it is shown"
+    );
+
     // A community plugin's settings tab is drawn from its `render`, and
     // changing a setting runs the plugin's `onChange`.
     let tab = app.settings_tab("options");

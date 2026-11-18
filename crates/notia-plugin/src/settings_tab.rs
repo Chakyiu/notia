@@ -161,6 +161,17 @@ impl Setting {
         Self::new(name, SettingControl::Text(SettingValue::new(get, set)))
     }
 
+    /// A text field that hides its characters. A button in the field shows
+    /// the value, and hides it again. `set` runs as the text changes, with
+    /// the real value, including while it is hidden.
+    pub fn secret(
+        name: impl Into<SharedString>,
+        get: impl Fn(&App) -> SharedString + 'static,
+        set: impl Fn(SharedString, &mut App) + 'static,
+    ) -> Self {
+        Self::new(name, SettingControl::Secret(SettingValue::new(get, set)))
+    }
+
     /// A number field that keeps the value within `range`, and steps by
     /// `step` with the arrow keys.
     pub fn number(
@@ -249,6 +260,8 @@ impl Setting {
 pub enum SettingControl {
     Toggle(SettingValue<bool>),
     Text(SettingValue<SharedString>),
+    /// Like [`Text`](Self::Text), drawn with the characters hidden until shown.
+    Secret(SettingValue<SharedString>),
     Number {
         value: SettingValue<f64>,
         range: RangeInclusive<f64>,

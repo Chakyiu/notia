@@ -1,17 +1,24 @@
 //! The settings dialog.
 
+use std::{cell::Cell, rc::Rc};
+
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, AxisExt as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::Button,
     h_flex,
-    setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
+    input::{Input, InputEvent, InputState},
+    setting::{
+        NumberFieldOptions, RenderOptions, SettingField, SettingGroup, SettingItem, SettingPage,
+        Settings,
+    },
     switch::Switch,
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use notia_plugin::{
-    AppSettings, Notia, PluginHost, PluginKind, Setting, SettingControl, SettingsSection, ViewMode,
+    AppSettings, Notia, PluginHost, PluginKind, Setting, SettingControl, SettingValue,
+    SettingsSection, ViewMode,
     theme::{ColorScheme, ThemeCatalog},
 };
 
@@ -122,6 +129,15 @@ fn setting_item(setting: &Setting) -> SettingItem {
                 ),
             )
         }
+        SettingControl::Secret(value) => {
+            let label = name.clone();
+            SettingItem::new(
+                name,
+                SettingField::render(move |options, window, cx| {
+                    secret_input(label.clone(), &value, options, window, cx)
+                }),
+            )
+        }
         SettingControl::Number { value, range, step } => {
             let set = value.clone();
             SettingItem::new(
@@ -160,6 +176,85 @@ fn setting_item(setting: &Setting) -> SettingItem {
         Some(description) => item.description(description.clone()),
         None => item,
     }
+}
+
+/// The input for a secret, such as the sync token. Characters stay hidden
+/// until the eye button shows them. The stored value is the real text either way.
+fn secret_input(
+    label: SharedString,
+    value: &SettingValue<SharedString>,
+    options: &RenderOptions,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let current = value.get(cx);
+    let set_value = value.clone();
+    let wide = !options.layout().is_horizontal();
+    let state = window.use_keyed_state(
+        SharedString::from(format!(
+            "secret-input-{}-{}-{}",
+            options.page_ix(),
+            options.group_ix(),
+            options.item_ix()
+        )),
+        cx,
+        {
+            let current = current.clone();
+            move |window, cx| {
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(current)
+                        .masked(true)
+                });
+                // Typing saves the real token. Showing or hiding it only
+                // redraws the eye icon; the text itself does not change.
+                let _events = cx.subscribe(&input, {
+                    let set_value = set_value.clone();
+                    move |_, input, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            set_value.set(input.read(cx).value(), cx);
+                        }
+                    }
+                });
+                let masked = Rc::new(Cell::new(true));
+                let _mask = cx.observe(&input, move |_, input, cx| {
+                    let now = input.read(cx).presentation().is_masked();
+                    if masked.get() != now {
+                        masked.set(now);
+                        cx.notify();
+                    }
+                });
+                SecretInput {
+                    input,
+                    _events,
+                    _mask,
+                }
+            }
+        },
+    );
+
+    state.update(cx, |state, cx| {
+        if state.input.read(cx).value() != current {
+            state.input.update(cx, |input, cx| {
+                input.set_value(current.clone(), window, cx);
+            });
+        }
+    });
+    let input = state.read(cx).input.clone();
+
+    Input::new(&input)
+        .aria_label(label)
+        .mask_toggle()
+        .disabled(options.is_disabled())
+        .with_size(options.size())
+        .map(|this| if wide { this.w_full() } else { this.w_64() })
+        .into_any_element()
+}
+
+struct SecretInput {
+    input: Entity<InputState>,
+    _events: Subscription,
+    _mask: Subscription,
 }
 
 fn appearance_page(cx: &App) -> SettingPage {
@@ -484,7 +579,7 @@ fn plugins_page(cx: &App) -> SettingPage {
     let mut community = SettingGroup::new()
         .title("Community plugins")
         .description(
-            "Plugins installed in this vault. Turn one on to load its code. Install more from Plugin store.",
+            "Plugins installed in this vault. Notia looks for updates when it opens. Turn one on to load its code. Install more from Plugin store.",
         )
         .item(community_folder_item(
             host.command(RELOAD_COMMUNITY_PLUGINS).is_some(),
@@ -521,15 +616,22 @@ fn plugins_page(cx: &App) -> SettingPage {
 }
 
 fn installed_community_plugins(cx: &App) -> SettingItem {
-    let mut keywords: Vec<SharedString> = vec!["community".into()];
+    let mut keywords: Vec<SharedString> = vec!["community".into(), "update".into()];
     for (manifest, _) in PluginHost::global(cx).plugins() {
         if manifest.kind() == PluginKind::Community {
             keywords.push(manifest.name().clone());
             keywords.push(manifest.id().clone());
         }
     }
-    SettingItem::render(|options, _, cx| {
+    SettingItem::render(|options, window, cx| {
+        let watched = crate::plugin_catalog::update_controller(cx);
+        let _updates =
+            window.use_keyed_state("notia-plugin-update-watch-plugins", cx, move |_, cx| {
+                crate::plugin_catalog::PluginUpdateWatch::new(watched, cx)
+            });
         let host = PluginHost::global(cx);
+        let checking = crate::plugin_catalog::checking_plugin_updates(cx);
+        let installing = crate::plugin_catalog::installing_plugin(cx);
         let rows: Vec<_> = host
             .plugins()
             .filter(|(manifest, _)| manifest.kind() == PluginKind::Community)
@@ -551,6 +653,14 @@ fn installed_community_plugins(cx: &App) -> SettingItem {
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
         let mut list = v_flex().w_full().gap_4();
+        if checking {
+            list = list.child(
+                div()
+                    .text_sm()
+                    .text_color(muted)
+                    .child("Checking for updates…"),
+            );
+        }
         for (row, error) in rows.into_iter().zip(errors) {
             let (id, name, description, author, version, enabled) = row;
             let details = [
@@ -581,7 +691,22 @@ fn installed_community_plugins(cx: &App) -> SettingItem {
                 let summary = error.lines().next().unwrap_or("").to_string();
                 text = text.child(div().text_sm().text_color(danger).child(summary));
             }
+            let available = crate::plugin_catalog::available_update(&id, cx);
+            if let Some(update) = &available {
+                text = text.child(
+                    div()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(format!("Version {} is available.", update.available)),
+                );
+            }
+            if let Some(error) = crate::plugin_catalog::update_error(&id, cx) {
+                let summary = error.lines().next().unwrap_or("").to_string();
+                text = text.child(div().text_sm().text_color(danger).child(summary));
+            }
             let switch_id = id.clone();
+            let update_id = id.clone();
+            let this_install = installing.as_deref() == Some(id.as_ref());
             list = list.child(
                 h_flex()
                     .w_full()
@@ -590,13 +715,40 @@ fn installed_community_plugins(cx: &App) -> SettingItem {
                     .gap_3()
                     .child(text)
                     .child(
-                        Switch::new(SharedString::from(format!("community-enabled-{id}")))
-                            .checked(enabled)
-                            .with_size(options.size())
-                            .accessibility_label(format!("Turn on {name}"))
-                            .on_change(move |checked, _, cx| {
-                                PluginHost::set_enabled(&switch_id, *checked, cx);
-                            }),
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .when(available.is_some(), |row| {
+                                row.child(
+                                    Button::new(SharedString::from(format!(
+                                        "update-plugin-{update_id}"
+                                    )))
+                                    .outline()
+                                    .label(if this_install {
+                                        "Updating…"
+                                    } else {
+                                        "Update"
+                                    })
+                                    .with_size(options.size())
+                                    .disabled(installing.is_some())
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            crate::plugin_catalog::install_available(
+                                                &update_id, cx,
+                                            );
+                                        },
+                                    ),
+                                )
+                            })
+                            .child(
+                                Switch::new(SharedString::from(format!("community-enabled-{id}")))
+                                    .checked(enabled)
+                                    .with_size(options.size())
+                                    .accessibility_label(format!("Turn on {name}"))
+                                    .on_change(move |checked, _, cx| {
+                                        PluginHost::set_enabled(&switch_id, *checked, cx);
+                                    }),
+                            ),
                     ),
             );
         }

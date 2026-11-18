@@ -15,10 +15,11 @@ use std::{
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
+    notification::Notification,
     setting::{RenderOptions, SettingGroup, SettingItem, SettingPage},
     text::TextView,
     v_flex,
@@ -119,6 +120,10 @@ struct CatalogState {
 }
 
 fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> AnyElement {
+    let watched = update_controller(cx);
+    let _updates = window.use_keyed_state("notia-plugin-update-watch-store", cx, move |_, cx| {
+        PluginUpdateWatch::new(watched, cx)
+    });
     let state = window.use_keyed_state("notia-plugin-store", cx, |window, cx| CatalogState {
         catalog: None,
         error: None,
@@ -132,7 +137,7 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
         readme_for: None,
         readme_task: None,
     });
-    let (catalog, error, loading, busy, install_errors, query_field, selected, readmes) = {
+    let (catalog, error, loading, mut busy, mut install_errors, query_field, selected, readmes) = {
         let ui = state.read(cx);
         (
             ui.catalog.clone(),
@@ -145,6 +150,10 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
             ui.readmes.clone(),
         )
     };
+    if let Some(id) = installing_plugin(cx) {
+        busy = Some(id);
+    }
+    install_errors.extend(update_errors(cx));
     let query = query_field.read(cx).value().to_string();
     if catalog.is_none() && error.is_none() && !loading {
         let state = state.clone();
@@ -373,7 +382,9 @@ fn row_control(
 ) -> AnyElement {
     let mut actions = h_flex().gap_1().flex_shrink_0();
     if matches!(control, RowControl::Install | RowControl::Update) {
-        let label = if this_busy {
+        let label = if this_busy && matches!(control, RowControl::Update) {
+            "Updating…"
+        } else if this_busy {
             "Installing…"
         } else if matches!(control, RowControl::Update) {
             "Update"
@@ -647,42 +658,25 @@ fn start_install(
     entry: CatalogEntry,
     cx: &mut App,
 ) {
+    let blocked = {
+        let ui = state.read(cx);
+        ui.loading || ui.task.is_some() || ui.busy.is_some()
+    };
+    if blocked || installing_plugin(cx).is_some() {
+        return;
+    }
+    let id = entry.id.clone();
     state.update(cx, |this, cx| {
-        if this.loading || this.task.is_some() || this.busy.is_some() {
-            return;
-        }
-        let id = entry.id.clone();
-        this.busy = Some(id.clone());
         this.install_errors.remove(&id);
-        this.task = Some(cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let bytes = download_archive(&entry)?;
-                    install_archive(&plugins_dir, &entry.id, &bytes)
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.task = None;
-                this.busy = None;
-                match result {
-                    Ok(()) => {
-                        this.install_errors.remove(&id);
-                        notia_js::reload_community_plugins(cx);
-                    }
-                    Err(message) => {
-                        log::warn!("could not install {id}: {message}");
-                        this.install_errors.insert(id, message);
-                    }
-                }
-                cx.notify();
-            });
-        }));
         cx.notify();
     });
+    install_plugin(plugins_dir, entry, cx);
 }
 
 fn start_uninstall(state: &Entity<CatalogState>, plugins_dir: PathBuf, id: String, cx: &mut App) {
+    if installing_plugin(cx).is_some() {
+        return;
+    }
     state.update(cx, |this, cx| {
         if this.loading || this.task.is_some() || this.busy.is_some() {
             return;
@@ -1157,12 +1151,16 @@ fn remote_manifest(entry: &CatalogEntry) -> RemoteManifest {
     RemoteManifest::Match { version }
 }
 
-fn fetch_catalog() -> Result<Catalog, String> {
+fn fetch_catalog_list() -> Result<Catalog, String> {
     let body = http_get(CATALOG_URL, MAX_CATALOG_BYTES, Duration::from_secs(20))
         .map_err(|error| explain(error, "The plugin list was not found."))?;
     let text =
         String::from_utf8(body).map_err(|_| "The plugin list could not be read.".to_string())?;
-    let mut catalog = parse_catalog(&text)?;
+    parse_catalog(&text)
+}
+
+fn fetch_catalog() -> Result<Catalog, String> {
+    let mut catalog = fetch_catalog_list()?;
     let mut entries = Vec::new();
     for mut entry in catalog.entries.drain(..) {
         match remote_manifest(&entry) {
@@ -1483,6 +1481,380 @@ fn write_tree(root: &Path, files: &BTreeMap<String, Vec<u8>>) -> Result<(), Stri
     Ok(())
 }
 
+/// A newer published copy of a plugin that is installed in this vault.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AvailablePluginUpdate {
+    pub available: String,
+}
+
+/// Notices that a plugin update is ready. A later notice with this id
+/// replaces the one already on screen.
+struct PluginUpdateNotice;
+
+/// The result of installing or updating one plugin from the store.
+struct PluginInstallNotice;
+
+#[derive(Clone)]
+struct TrackedUpdate {
+    id: String,
+    name: String,
+    available: String,
+    entry: CatalogEntry,
+}
+
+struct PluginUpdateHost {
+    controller: Entity<PluginUpdateController>,
+}
+
+impl Global for PluginUpdateHost {}
+
+pub(crate) struct PluginUpdateController {
+    updates: BTreeMap<String, TrackedUpdate>,
+    errors: BTreeMap<String, String>,
+    checking: bool,
+    installing: Option<String>,
+    plugins_dir: Option<PathBuf>,
+    /// Bumped when a new check starts, so a slower check for another vault
+    /// cannot publish over it.
+    check_generation: u64,
+    check_task: Option<Task<()>>,
+    install_task: Option<Task<()>>,
+}
+
+impl PluginUpdateController {
+    fn new(_cx: &mut Context<Self>) -> Self {
+        Self {
+            updates: BTreeMap::new(),
+            errors: BTreeMap::new(),
+            checking: false,
+            installing: None,
+            plugins_dir: None,
+            check_generation: 0,
+            check_task: None,
+            install_task: None,
+        }
+    }
+
+    fn check(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        if self.checking && self.plugins_dir.as_ref() == Some(&dir) {
+            return;
+        }
+        if self.plugins_dir.as_ref() != Some(&dir) {
+            self.updates.clear();
+            self.errors.clear();
+        }
+        self.plugins_dir = Some(dir.clone());
+        self.checking = true;
+        self.check_generation = self.check_generation.wrapping_add(1);
+        let generation = self.check_generation;
+        cx.notify();
+        let listed = dir.clone();
+        self.check_task = Some(cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move { look_for_updates(&listed) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if generation != this.check_generation {
+                    return;
+                }
+                this.checking = false;
+                this.check_task = None;
+                match found {
+                    Ok(updates) => {
+                        let updates: Vec<_> = updates
+                            .into_iter()
+                            .filter(|update| still_newer(&dir, update))
+                            .collect();
+                        if !updates.is_empty() {
+                            announce_available(&updates, cx);
+                        }
+                        this.errors
+                            .retain(|id, _| updates.iter().any(|update| update.id == *id));
+                        this.updates = updates
+                            .into_iter()
+                            .map(|update| (update.id.clone(), update))
+                            .collect();
+                    }
+                    Err(message) => {
+                        log::warn!("could not check plugin updates: {message}");
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn install(&mut self, dir: PathBuf, entry: CatalogEntry, cx: &mut Context<Self>) {
+        if self.installing.is_some() {
+            return;
+        }
+        let id = entry.id.clone();
+        let name = entry.name.clone();
+        let replacing =
+            self.updates.contains_key(&id) || folder_kind(&dir, &id) == FolderKind::Directory;
+        self.installing = Some(id.clone());
+        self.errors.remove(&id);
+        self.plugins_dir = Some(dir.clone());
+        cx.notify();
+        let archive_id = id.clone();
+        let archive_dir = dir;
+        self.install_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let bytes = download_archive(&entry)?;
+                    install_archive(&archive_dir, &archive_id, &bytes)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.finish_install(id, name, replacing, result, cx);
+            });
+        }));
+    }
+
+    fn finish_install(
+        &mut self,
+        id: String,
+        name: String,
+        replacing: bool,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.installing = None;
+        self.install_task = None;
+        match result {
+            Ok(()) => {
+                let was_update = self.updates.remove(&id).is_some();
+                self.errors.remove(&id);
+                notia_js::reload_community_plugins(cx);
+                if was_update && !self.updates.is_empty() {
+                    let left: Vec<_> = self.updates.values().cloned().collect();
+                    announce_available(&left, cx);
+                } else if was_update {
+                    push_note(
+                        Notification::success(format!("Updated {name}."))
+                            .id::<PluginUpdateNotice>(),
+                        cx,
+                    );
+                } else {
+                    let verb = if replacing { "Updated" } else { "Installed" };
+                    push_note(
+                        Notification::success(format!("{verb} {name}."))
+                            .id::<PluginInstallNotice>(),
+                        cx,
+                    );
+                }
+            }
+            Err(message) => {
+                log::warn!("could not install {id}: {message}");
+                self.errors.insert(id, message.clone());
+                push_note(Notification::error(message).id::<PluginInstallNotice>(), cx);
+            }
+        }
+        cx.notify();
+    }
+}
+
+/// Keeps a settings page in step with the update check.
+pub(crate) struct PluginUpdateWatch {
+    _observe: Subscription,
+}
+
+impl PluginUpdateWatch {
+    pub(crate) fn new(controller: Entity<PluginUpdateController>, cx: &mut Context<Self>) -> Self {
+        Self {
+            _observe: cx.observe(&controller, |_, _, cx| cx.notify()),
+        }
+    }
+}
+
+/// Looks for newer copies of the plugins installed in the open vault.
+pub(crate) fn on_launch(cx: &mut App) {
+    let dir = Notia::vault(cx)
+        .read(cx)
+        .vault()
+        .config_dir()
+        .join("plugins");
+    controller(cx).update(cx, |this, cx| this.check(dir, cx));
+}
+
+pub(crate) fn update_controller(cx: &mut App) -> Entity<PluginUpdateController> {
+    controller(cx)
+}
+
+pub(crate) fn available_update(id: &str, cx: &App) -> Option<AvailablePluginUpdate> {
+    let host = cx.try_global::<PluginUpdateHost>()?;
+    host.controller
+        .read(cx)
+        .updates
+        .get(id)
+        .map(|update| AvailablePluginUpdate {
+            available: update.available.clone(),
+        })
+}
+
+pub(crate) fn checking_plugin_updates(cx: &App) -> bool {
+    cx.try_global::<PluginUpdateHost>()
+        .is_some_and(|host| host.controller.read(cx).checking)
+}
+
+pub(crate) fn installing_plugin(cx: &App) -> Option<String> {
+    cx.try_global::<PluginUpdateHost>()
+        .and_then(|host| host.controller.read(cx).installing.clone())
+}
+
+pub(crate) fn update_error(id: &str, cx: &App) -> Option<String> {
+    cx.try_global::<PluginUpdateHost>()
+        .and_then(|host| host.controller.read(cx).errors.get(id).cloned())
+}
+
+fn update_errors(cx: &App) -> BTreeMap<String, String> {
+    cx.try_global::<PluginUpdateHost>()
+        .map(|host| host.controller.read(cx).errors.clone())
+        .unwrap_or_default()
+}
+
+/// Downloads the newer copy found for an installed plugin.
+pub(crate) fn install_available(id: &str, cx: &mut App) {
+    controller(cx).update(cx, |this, cx| {
+        let Some(dir) = this.plugins_dir.clone() else {
+            return;
+        };
+        let Some(update) = this.updates.get(id).cloned() else {
+            return;
+        };
+        this.install(dir, update.entry, cx);
+    });
+}
+
+fn install_plugin(dir: PathBuf, entry: CatalogEntry, cx: &mut App) {
+    controller(cx).update(cx, |this, cx| this.install(dir, entry, cx));
+}
+
+fn controller(cx: &mut App) -> Entity<PluginUpdateController> {
+    if let Some(host) = cx.try_global::<PluginUpdateHost>() {
+        return host.controller.clone();
+    }
+    let controller = cx.new(PluginUpdateController::new);
+    cx.set_global(PluginUpdateHost {
+        controller: controller.clone(),
+    });
+    controller
+}
+
+fn installed_copies(dir: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !valid_plugin_id(&id) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            continue;
+        }
+        found.push((id, version_on_disk(&path)));
+    }
+    found.sort();
+    found
+}
+
+fn select_updates(
+    installed: &[(String, String)],
+    entries: &[CatalogEntry],
+    remotes: &BTreeMap<String, Option<String>>,
+) -> Vec<TrackedUpdate> {
+    let mut updates = Vec::new();
+    for (id, installed_version) in installed {
+        let Some(remote) = remotes.get(id).and_then(|version| version.clone()) else {
+            continue;
+        };
+        if !remote_is_newer(&remote, installed_version) {
+            continue;
+        }
+        let Some(entry) = entries.iter().find(|entry| entry.id == *id) else {
+            continue;
+        };
+        let mut entry = entry.clone();
+        entry.version = Some(remote.clone());
+        updates.push(TrackedUpdate {
+            id: id.clone(),
+            name: entry.name.clone(),
+            available: remote,
+            entry,
+        });
+    }
+    updates
+}
+
+fn still_newer(dir: &Path, update: &TrackedUpdate) -> bool {
+    remote_is_newer(&update.available, &version_on_disk(&dir.join(&update.id)))
+}
+
+fn look_for_updates(dir: &Path) -> Result<Vec<TrackedUpdate>, String> {
+    let installed = installed_copies(dir);
+    if installed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let catalog = fetch_catalog_list()?;
+    let mut remotes = BTreeMap::new();
+    for (id, _) in &installed {
+        let Some(entry) = catalog.entries.iter().find(|entry| entry.id == *id) else {
+            continue;
+        };
+        let version = match remote_manifest(entry) {
+            RemoteManifest::Match { version } => version,
+            RemoteManifest::Unread | RemoteManifest::Mismatch => None,
+        };
+        remotes.insert(id.clone(), version);
+    }
+    Ok(select_updates(&installed, &catalog.entries, &remotes))
+}
+
+fn announce_available(updates: &[TrackedUpdate], cx: &mut App) {
+    let message = if updates.len() == 1 {
+        format!("An update is available for {}.", updates[0].name)
+    } else {
+        format!("{} plugin updates are available.", updates.len())
+    };
+    let mut note = Notification::info(message).id::<PluginUpdateNotice>();
+    if updates.len() == 1 {
+        let id = updates[0].id.clone();
+        note = note.action(move |_, _, _| {
+            let id = id.clone();
+            Button::new("install-plugin-update")
+                .label("Update")
+                .on_click(move |_, _, cx| install_available(&id, cx))
+        });
+    } else {
+        note = note.action(|_, _, _| {
+            Button::new("review-plugin-updates")
+                .label("Review")
+                .on_click(|_, window, cx| crate::settings_dialog::open_settings(window, cx))
+        });
+    }
+    push_note(note, cx);
+}
+
+fn push_note(note: Notification, cx: &mut App) {
+    let Some(window) = cx.active_window() else {
+        log::info!("plugin update notice");
+        return;
+    };
+    if let Err(error) = window.update(cx, |_, window, cx| window.push_notification(note, cx)) {
+        log::info!("{error:#}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1493,8 +1865,8 @@ mod tests {
 
     use super::{
         CatalogEntry, FolderKind, RowControl, archive_url, github_url, install_archive,
-        manifest_url, matches_query, parse_catalog, readme_url, remote_is_newer, row_plan,
-        uninstall_plugin,
+        installed_copies, manifest_url, matches_query, parse_catalog, readme_url, remote_is_newer,
+        row_plan, select_updates, uninstall_plugin,
     };
 
     fn entry(branch: &str) -> CatalogEntry {
@@ -1731,5 +2103,42 @@ mod tests {
         assert!(matches_query(&plugin, "css"));
         assert!(matches_query(&plugin, "notia"));
         assert!(!matches_query(&plugin, "templater"));
+    }
+
+    #[test]
+    fn installed_copies_skip_links_and_read_versions() {
+        let dir = temp_plugins("copies");
+        let plugins = dir.join("plugins");
+        install_archive(&plugins, "daily-notes", &plugin_zip("daily-notes")).unwrap();
+        fs::write(plugins.join("notes.txt"), "not a plugin").unwrap();
+        let source = dir.join("source");
+        fs::create_dir_all(&source).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&source, plugins.join("linked-plugin")).unwrap();
+
+        let copies = installed_copies(&plugins);
+        assert_eq!(copies, vec![("daily-notes".into(), "0.2.0".into())]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn selects_only_installed_plugins_with_a_newer_copy() {
+        let daily = entry("main");
+        let mut other = entry("main");
+        other.id = "other".into();
+        other.name = "Other".into();
+        let installed = vec![
+            ("daily-notes".into(), "0.1.0".into()),
+            ("other".into(), "2.0.0".into()),
+            ("local".into(), "0.1.0".into()),
+        ];
+        let mut remotes = std::collections::BTreeMap::new();
+        remotes.insert("daily-notes".into(), Some("0.2.0".into()));
+        remotes.insert("other".into(), Some("2.0.0".into()));
+        remotes.insert("local".into(), Some("9.0.0".into()));
+        let updates = select_updates(&installed, &[daily, other], &remotes);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].id, "daily-notes");
+        assert_eq!(updates[0].available, "0.2.0");
     }
 }

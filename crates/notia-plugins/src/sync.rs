@@ -460,9 +460,9 @@ impl Render for SyncStatus {
     }
 }
 
-/// A pile of cards above the settings panel. That panel is a popup (priority
-/// 100) and paints over the window's own notifications, so this sits higher,
-/// at the bottom right, clear of the panel's close button.
+/// A pile of cards above the settings panel, at the bottom right and clear of
+/// the panel's close button. Dialogs paint at priority 100. Window
+/// notifications paint at 180, and tooltips at 200.
 fn sync_notice(
     notices: &[(u64, SharedString)],
     stack: ToastStackState,
@@ -527,13 +527,13 @@ fn settings_page(_: &mut App) -> Vec<SettingsSection> {
                     |value, cx| edit(cx, |settings| settings.server_url = value.to_string()),
                 )
                 .with_description("Such as http://192.168.1.20:8787."),
-                Setting::text(
+                Setting::secret(
                     "Token",
                     |cx| SyncSettings::load(cx).token.into(),
                     |value, cx| edit(cx, |settings| settings.token = value.to_string()),
                 )
                 .with_description(
-                    "The secret the server prints. It stays on this computer, and anyone with it can read and change the vault on the server.",
+                    "The secret the server prints. The field hides it until you show it. It stays on this computer, and anyone with it can read and change the vault on the server.",
                 ),
                 Setting::text(
                     "Vault id",

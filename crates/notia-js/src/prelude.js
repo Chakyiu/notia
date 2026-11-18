@@ -105,8 +105,16 @@
   const ui = Object.freeze({
     column: (children = [], options = {}) => ({ ...options, type: "column", children }),
     row: (children = [], options = {}) => ({ ...options, type: "row", children }),
+    /** A bordered field. A chat puts the question and its controls in one. */
+    composer: (children = []) => ({ type: "composer", children }),
     heading: (text) => ({ type: "heading", text: String(text) }),
     text: (text, options = {}) => ({ ...options, type: "text", text: String(text) }),
+    /** A Lucide icon, with no button around it. */
+    icon: (name, options = {}) => ({
+      type: "icon",
+      name: String(name ?? ""),
+      muted: options.muted === true,
+    }),
     markdown: (source) => ({ type: "markdown", source: String(source) }),
     button: (label, onClick, options = {}) => ({
       ...options,
@@ -114,7 +122,20 @@
       label: String(label),
       onClick: expectFunction(onClick, "a button's onClick"),
     }),
-    list: (items = []) => ({ type: "list", items }),
+    list: (items = [], options = {}) => ({
+      type: "list",
+      items,
+      compact: options.compact === true,
+    }),
+    /**
+     * A short label, such as a passage added to the chat. `onClose` draws
+     * an × that removes it.
+     */
+    chip: (label, onClose) => ({
+      type: "chip",
+      label: String(label),
+      onClose: typeof onClose === "function" ? onClose : undefined,
+    }),
     separator: () => ({ type: "separator" }),
     empty: (text) => ({ type: "empty", text: String(text) }),
     // Settings tabs: a named row with one of the controls below.
@@ -128,6 +149,8 @@
       type: "text_input",
       value: String(value ?? ""),
       placeholder: options.placeholder == null ? "" : String(options.placeholder),
+      // Hidden text, with a button that shows the value. For keys and tokens.
+      secret: options.secret === true,
       onChange: expectFunction(onChange, "a text input's onChange"),
     }),
     /**
@@ -138,8 +161,10 @@
       type: "text_area",
       value: String(value ?? ""),
       rows: Number(options.rows) || 14,
+      maxRows: Number(options.maxRows) > 0 ? Number(options.maxRows) : undefined,
       id: options.id == null ? "" : String(options.id),
       placeholder: options.placeholder == null ? "" : String(options.placeholder),
+      plain: options.plain === true,
       onChange: expectFunction(onChange, "a text area's onChange"),
       onSubmit: typeof options.onSubmit === "function" ? options.onSubmit : undefined,
     }),
@@ -150,14 +175,31 @@
       onChange: expectFunction(onChange, "a number input's onChange"),
     }),
     /**
+     * A bar of chats. Each tab has a label, and may close. `actions` sit at
+     * the end, such as new chat and history.
+     */
+    tabBar: (tabs = [], actions = []) => ({
+      type: "tab_bar",
+      tabs: [...tabs].map((tab) => ({
+        label: String(tab?.label ?? ""),
+        icon: tab?.icon == null ? undefined : String(tab.icon),
+        active: tab?.active === true,
+        onSelect: typeof tab?.onSelect === "function" ? tab.onSelect : undefined,
+        onClose: typeof tab?.onClose === "function" ? tab.onClose : undefined,
+      })),
+      actions,
+    }),
+    /**
      * A scrolling region with a footer that stays put. A chat panel uses it
      * so the message list scrolls and the field stays at the bottom.
-     * `body` and `footer` are elements or arrays of them.
+     * `body` and `footer` are elements or arrays of them. `header` stays
+     * above the list, such as a tab bar.
      */
-    dock: (body, footer) => ({
+    dock: (body, footer, header) => ({
       type: "dock",
       body: block(body),
       footer: block(footer),
+      header: header == null || header === false ? undefined : block(header),
     }),
     dropdown: (value, options, onChange) => ({
       type: "dropdown",
@@ -561,6 +603,7 @@
    * Fetches an http or https address. The promise resolves with
    * `{ status, headers, text }` and rejects if the address is refused or
    * the server cannot be reached. A status such as 404 still resolves.
+   * `onChunk` receives each piece of a successful body as it arrives.
    */
   const requestUrl = (options) => {
     const request = options ?? {};
@@ -572,7 +615,11 @@
     }
     return new Promise((resolve, reject) => {
       const id = nextCallback++;
-      pendingRequests.set(id, { resolve, reject });
+      pendingRequests.set(id, {
+        resolve,
+        reject,
+        onChunk: typeof request.onChunk === "function" ? request.onChunk : null,
+      });
       try {
         call("requestUrl", id, {
           url: String(request.url ?? ""),
@@ -580,6 +627,7 @@
           headers,
           body: request.body == null ? "" : String(request.body),
           timeout: request.timeout == null ? null : Number(request.timeout),
+          stream: typeof request.onChunk === "function",
         });
       } catch (error) {
         pendingRequests.delete(id);
@@ -657,6 +705,16 @@
         const [index, ...args] = JSON.parse(payload);
         const handler = views.get(target)?.handlers[Number(index)];
         if (handler) settle(handler(...args));
+        return undefined;
+      }
+      case "request-chunk": {
+        const pending = pendingRequests.get(Number(target));
+        if (!pending?.onChunk) return undefined;
+        try {
+          pending.onChunk(payload);
+        } catch (error) {
+          report(error);
+        }
         return undefined;
       }
       case "request": {

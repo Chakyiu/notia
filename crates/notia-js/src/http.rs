@@ -29,6 +29,9 @@ pub(crate) struct Request {
     pub(crate) body: String,
     #[serde(default)]
     pub(crate) timeout: Option<f64>,
+    /// Deliver the body in pieces as it arrives, then return the whole reply.
+    #[serde(default)]
+    pub(crate) stream: bool,
 }
 
 pub(crate) struct Prepared {
@@ -37,6 +40,7 @@ pub(crate) struct Prepared {
     headers: BTreeMap<String, String>,
     body: String,
     timeout: Duration,
+    stream: bool,
 }
 
 /// Checks the request and fills in the method and user agent.
@@ -92,11 +96,26 @@ pub(crate) fn prepare(request: Request) -> Result<Prepared, String> {
         headers,
         body: request.body,
         timeout,
+        stream: request.stream,
     })
 }
 
 /// Performs `prepared` and returns `{ status, headers, text }`.
-pub(crate) fn perform(mut prepared: Prepared) -> Result<Value, String> {
+pub(crate) fn perform(prepared: Prepared) -> Result<Value, String> {
+    exchange(prepared, &mut |_| {})
+}
+
+/// Like [`perform`], and calls `on_chunk` with each piece of a successful body
+/// as it arrives.
+pub(crate) fn perform_stream(
+    prepared: Prepared,
+    mut on_chunk: impl FnMut(&str),
+) -> Result<Value, String> {
+    exchange(prepared, &mut on_chunk)
+}
+
+/// Performs `prepared` and returns `{ status, headers, text }`.
+fn exchange(mut prepared: Prepared, on_chunk: &mut dyn FnMut(&str)) -> Result<Value, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(prepared.timeout))
         .max_redirects(0)
@@ -113,7 +132,11 @@ pub(crate) fn perform(mut prepared: Prepared) -> Result<Value, String> {
         })?;
         let status = response.status().as_u16();
         if !matches!(status, 301 | 302 | 303 | 307 | 308) {
-            return read_body(status, &mut response);
+            return if prepared.stream && (200..300).contains(&status) {
+                read_stream(status, &mut response, on_chunk)
+            } else {
+                read_body(status, &mut response)
+            };
         }
         let location = response
             .headers()
@@ -180,10 +203,7 @@ fn send(
     }
 }
 
-fn read_body(
-    status: u16,
-    response: &mut ureq::http::Response<ureq::Body>,
-) -> Result<Value, String> {
+fn response_headers(response: &ureq::http::Response<ureq::Body>) -> Map<String, Value> {
     let mut headers = Map::new();
     for (name, value) in response.headers() {
         let Ok(text) = value.to_str() else {
@@ -197,6 +217,14 @@ fn read_body(
             Value::String(text.to_string()),
         );
     }
+    headers
+}
+
+fn read_body(
+    status: u16,
+    response: &mut ureq::http::Response<ureq::Body>,
+) -> Result<Value, String> {
+    let headers = response_headers(response);
     let bytes = response
         .body_mut()
         .with_config()
@@ -204,6 +232,65 @@ fn read_body(
         .read_to_vec()
         .map_err(|error| format!("could not read the reply: {error}"))?;
     let text = String::from_utf8(bytes).map_err(|_| "the reply is not text".to_string())?;
+    Ok(json!({
+        "status": status,
+        "headers": headers,
+        "text": text,
+    }))
+}
+
+/// Reads a successful body in pieces. Incomplete UTF-8 at the end of a piece
+/// waits for the next one.
+fn read_stream(
+    status: u16,
+    response: &mut ureq::http::Response<ureq::Body>,
+    on_chunk: &mut dyn FnMut(&str),
+) -> Result<Value, String> {
+    use std::io::Read;
+
+    let headers = response_headers(response);
+    let mut reader = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_RESPONSE)
+        .reader();
+    let mut buf = [0; 4096];
+    let mut pending = Vec::new();
+    let mut text = String::new();
+    loop {
+        let read = reader
+            .read(&mut buf)
+            .map_err(|error| format!("could not read the reply: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        pending.extend_from_slice(&buf[..read]);
+        let valid = match std::str::from_utf8(&pending) {
+            Ok(_) => pending.len(),
+            Err(error) => error.valid_up_to(),
+        };
+        if valid > 0 {
+            let piece = std::str::from_utf8(&pending[..valid])
+                .unwrap_or("")
+                .to_string();
+            pending.drain(..valid);
+            if !piece.is_empty() {
+                text.push_str(&piece);
+                on_chunk(&piece);
+            }
+        }
+        if pending.len() > 3 {
+            let piece = String::from_utf8_lossy(&pending).into_owned();
+            pending.clear();
+            text.push_str(&piece);
+            on_chunk(&piece);
+        }
+    }
+    if !pending.is_empty() {
+        let piece = String::from_utf8_lossy(&pending).into_owned();
+        text.push_str(&piece);
+        on_chunk(&piece);
+    }
     Ok(json!({
         "status": status,
         "headers": headers,
@@ -290,6 +377,7 @@ mod tests {
             headers: BTreeMap::new(),
             body: String::new(),
             timeout: None,
+            stream: false,
         }
     }
 
@@ -357,5 +445,50 @@ mod tests {
         let value = perform(prepare(spec).unwrap()).unwrap();
         assert_eq!(value["status"], 200);
         assert_eq!(value["text"], "pong");
+    }
+
+    #[test]
+    fn a_streamed_body_arrives_in_pieces() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut buf = [0; 8192];
+            let mut got = Vec::new();
+            loop {
+                match std::io::Read::read(&mut stream, &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        got.extend_from_slice(&buf[..n]);
+                        if got.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = stream.set_nodelay(true);
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nHello",
+            );
+            let _ = std::io::Write::flush(&mut stream);
+            std::thread::sleep(Duration::from_millis(40));
+            let _ = std::io::Write::write_all(&mut stream, b"World");
+        });
+
+        let mut spec = request(&format!("http://{address}/stream"));
+        spec.method = "GET".into();
+        spec.stream = true;
+        let mut pieces = Vec::new();
+        let value = perform_stream(prepare(spec).unwrap(), |piece| {
+            pieces.push(piece.to_string())
+        })
+        .unwrap();
+        assert_eq!(value["text"], "HelloWorld");
+        assert_eq!(pieces.concat(), "HelloWorld");
+        assert!(pieces.len() > 1);
     }
 }

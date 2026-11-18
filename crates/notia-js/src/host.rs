@@ -211,6 +211,10 @@ impl JsRuntime {
                     .remove(&args.get::<u64>(0)?);
                 Ok(Value::Null)
             }
+            "requestUrl" => {
+                let (id, request): (u64, crate::http::Request) = (args.get(0)?, args.get(1)?);
+                self.start_request(id, request, cx)
+            }
             _ if method.starts_with("vault.") => vault_call(method, &args, cx),
             _ if method.starts_with("workspace.") => self.workspace_call(method, &args, cx),
             _ if method.starts_with("editor.") => editor_call(method, &args, cx),
@@ -422,6 +426,54 @@ impl JsRuntime {
             // `clearTimeout` forgets the callback, so a cleared timeout that
             // fires does nothing.
             task.detach();
+        }
+    }
+
+    /// Starts an HTTP request and resolves the plugin's promise when it
+    /// finishes. The call returns at once, so a slow server does not freeze
+    /// the window or use up the plugin's time limit.
+    fn start_request(
+        self: &Rc<Self>,
+        id: u64,
+        request: crate::http::Request,
+        cx: &mut App,
+    ) -> Result<Value, String> {
+        let prepared = crate::http::prepare(request)?;
+        {
+            let mut state = self.state.borrow_mut();
+            if state.in_flight >= crate::http::MAX_IN_FLIGHT {
+                return Err("too many requests at once".into());
+            }
+            state.in_flight += 1;
+        }
+        let js = Rc::downgrade(self);
+        cx.spawn(async move |cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::http::perform(prepared) })
+                .await;
+            if let Some(js) = js.upgrade() {
+                cx.update(|cx| js.finish_request(id, result, cx));
+            }
+        })
+        .detach();
+        Ok(Value::Null)
+    }
+
+    fn finish_request(&self, id: u64, result: Result<Value, String>, cx: &mut App) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.in_flight = state.in_flight.saturating_sub(1);
+        }
+        if self.unloaded.get() {
+            return;
+        }
+        let payload = match result {
+            Ok(response) => json!({ "ok": true, "response": response }),
+            Err(error) => json!({ "ok": false, "error": error }),
+        };
+        if let Err(error) = self.dispatch("request", &id.to_string(), &payload.to_string(), cx) {
+            self.report(&error, cx);
         }
     }
 

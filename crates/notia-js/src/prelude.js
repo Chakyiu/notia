@@ -94,6 +94,14 @@
     error: (...values) => call("log", "error", format(values)),
   });
 
+  // An element, or a column of them. Used by `dock`, which accepts an array.
+  const block = (value) => {
+    if (Array.isArray(value)) return { type: "column", children: value };
+    if (value == null || typeof value === "boolean") return { type: "column", children: [] };
+    if (typeof value !== "object") return { type: "text", text: String(value) };
+    return value;
+  };
+
   const ui = Object.freeze({
     column: (children = [], options = {}) => ({ ...options, type: "column", children }),
     row: (children = [], options = {}) => ({ ...options, type: "row", children }),
@@ -116,9 +124,10 @@
       value: Boolean(value),
       onChange: expectFunction(onChange, "a toggle's onChange"),
     }),
-    textInput: (value, onChange) => ({
+    textInput: (value, onChange, options = {}) => ({
       type: "text_input",
       value: String(value ?? ""),
+      placeholder: options.placeholder == null ? "" : String(options.placeholder),
       onChange: expectFunction(onChange, "a text input's onChange"),
     }),
     /**
@@ -130,13 +139,25 @@
       value: String(value ?? ""),
       rows: Number(options.rows) || 14,
       id: options.id == null ? "" : String(options.id),
+      placeholder: options.placeholder == null ? "" : String(options.placeholder),
       onChange: expectFunction(onChange, "a text area's onChange"),
+      onSubmit: typeof options.onSubmit === "function" ? options.onSubmit : undefined,
     }),
     numberInput: (value, onChange, options = {}) => ({
       ...options,
       type: "number_input",
       value: Number(value) || 0,
       onChange: expectFunction(onChange, "a number input's onChange"),
+    }),
+    /**
+     * A scrolling region with a footer that stays put. A chat panel uses it
+     * so the message list scrolls and the field stays at the bottom.
+     * `body` and `footer` are elements or arrays of them.
+     */
+    dock: (body, footer) => ({
+      type: "dock",
+      body: block(body),
+      footer: block(footer),
     }),
     dropdown: (value, options, onChange) => ({
       type: "dropdown",
@@ -533,7 +554,41 @@
     }
   }
 
-  const api = Object.freeze({ Plugin, Notice, ui });
+  // Promises returned by `requestUrl`, resolved when the host finishes.
+  const pendingRequests = new Map();
+
+  /**
+   * Fetches an http or https address. The promise resolves with
+   * `{ status, headers, text }` and rejects if the address is refused or
+   * the server cannot be reached. A status such as 404 still resolves.
+   */
+  const requestUrl = (options) => {
+    const request = options ?? {};
+    const headers = {};
+    if (request.headers != null && typeof request.headers === "object") {
+      for (const [key, value] of Object.entries(request.headers)) {
+        if (value != null) headers[String(key)] = String(value);
+      }
+    }
+    return new Promise((resolve, reject) => {
+      const id = nextCallback++;
+      pendingRequests.set(id, { resolve, reject });
+      try {
+        call("requestUrl", id, {
+          url: String(request.url ?? ""),
+          method: request.method == null ? "" : String(request.method),
+          headers,
+          body: request.body == null ? "" : String(request.body),
+          timeout: request.timeout == null ? null : Number(request.timeout),
+        });
+      } catch (error) {
+        pendingRequests.delete(id);
+        reject(error);
+      }
+    });
+  };
+
+  const api = Object.freeze({ Plugin, Notice, ui, requestUrl });
   Object.defineProperty(globalThis, Symbol.for("notia"), { value: api });
 
   // Plugins bundled as CommonJS, like most Obsidian plugins, assign
@@ -602,6 +657,15 @@
         const [index, ...args] = JSON.parse(payload);
         const handler = views.get(target)?.handlers[Number(index)];
         if (handler) settle(handler(...args));
+        return undefined;
+      }
+      case "request": {
+        const pending = pendingRequests.get(Number(target));
+        pendingRequests.delete(Number(target));
+        if (!pending) return undefined;
+        const result = JSON.parse(payload);
+        if (result.ok) pending.resolve(result.response);
+        else pending.reject(new Error(result.error || "The request failed."));
         return undefined;
       }
       case "unload": {

@@ -25,6 +25,7 @@
 
 mod file_icons;
 mod host;
+mod http;
 mod loader;
 mod manifest;
 mod offsets;

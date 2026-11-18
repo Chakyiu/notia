@@ -227,10 +227,85 @@ export default class Editing extends Plugin {
 }
 "#;
 
+/// Calls `requestUrl`: a non-http address is refused, and a local server answers.
+const FETCH: &str = r#"
+import { Plugin, requestUrl } from "notia";
+
+export default class Fetch extends Plugin {
+  onload() {
+    this.addCommand({
+      id: "get",
+      name: "Get",
+      callback: async () => {
+        const data = {};
+        try {
+          await requestUrl({ url: "file:///etc/passwd" });
+          data.blocked = "allowed";
+        } catch (error) {
+          data.blocked = error.message;
+        }
+        try {
+          const response = await requestUrl({
+            url: "http://127.0.0.1:PORT/echo",
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: "ping",
+          });
+          data.status = response.status;
+          data.text = response.text;
+        } catch (error) {
+          data.error = error.message;
+        }
+        await this.saveData(data);
+      },
+    });
+  }
+}
+"#;
+
+fn serve_echo() -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut buf = [0; 8192];
+        let mut got = Vec::new();
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    got.extend_from_slice(&buf[..n]);
+                    if got.windows(4).any(|window| window == b"\r\n\r\n")
+                        && got.windows(4).any(|window| window == b"ping")
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+        let body = if got.windows(4).any(|window| window == b"ping") {
+            "pong"
+        } else {
+            "missing"
+        };
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+    });
+    port
+}
+
 fn main() {
     env_logger::builder()
         .parse_env(env_logger::Env::default().default_filter_or("notia_js=debug"))
         .init();
+    let echo_port = serve_echo();
     let folder = tempfile::tempdir().expect("create a vault folder");
     let root = folder.path();
     let vault = Vault::open(root).expect("open the vault");
@@ -252,6 +327,11 @@ fn main() {
     write_plugin(&plugins, "editing", &[("main.js", EDITING)]);
     write_plugin(&plugins, "options", &[("main.js", OPTIONS)]);
     write_plugin(&plugins, "painter", &[("main.js", PAINTER)]);
+    write_plugin(
+        &plugins,
+        "fetch",
+        &[("main.js", &FETCH.replace("PORT", &echo_port.to_string()))],
+    );
     write_plugin(
         &plugins,
         "broken",
@@ -278,7 +358,7 @@ fn main() {
     .unwrap();
     fs::write(
         root.join(".notia/plugins.json"),
-        r#"{ "probe": true, "commonjs": true, "editing": true, "options": true, "broken": true, "slow": true, "painter": true }"#,
+        r#"{ "probe": true, "commonjs": true, "editing": true, "options": true, "broken": true, "slow": true, "painter": true, "fetch": true }"#,
     )
     .unwrap();
 
@@ -579,6 +659,28 @@ export default class extends Plugin {{
     app.read(|host| assert!(host.error("painter").is_none()));
     app.update(|cx| PluginHost::set_enabled("painter", false, cx));
     app.update(|cx| assert_ne!(cx.theme().background, painted));
+
+    // requestUrl refuses a non-http address and returns a local server's body.
+    app.read(|host| {
+        assert!(host.error("fetch").is_none(), "{:?}", host.error("fetch"));
+    });
+    app.run_command("fetch:get");
+    let fetch_data = plugins.join("fetch/data.json");
+    assert!(
+        app.wait_until(|_| fetch_data.is_file()),
+        "requestUrl did not finish"
+    );
+    let fetched: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&fetch_data).unwrap()).unwrap();
+    let blocked = fetched["blocked"].as_str().unwrap_or("");
+    assert!(
+        blocked.contains("http://") && fetched["error"].is_null(),
+        "{fetched}"
+    );
+    assert_eq!(
+        (fetched["status"].as_u64(), fetched["text"].as_str()),
+        (Some(200), Some("pong"))
+    );
 
     // Turning off the loader removes every community plugin.
     app.update(|cx| PluginHost::set_enabled("community-plugins", false, cx));

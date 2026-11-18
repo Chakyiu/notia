@@ -312,6 +312,7 @@ impl JsSettings {
                     value,
                     rows,
                     on_change,
+                    ..
                 } => (id, value, *rows, *on_change),
                 Node::Setting { control, .. } => match control.as_deref() {
                     Some(Node::TextArea {
@@ -319,6 +320,7 @@ impl JsSettings {
                         value,
                         rows,
                         on_change,
+                        ..
                     }) => (id, value, *rows, *on_change),
                     _ => continue,
                 },
@@ -350,7 +352,7 @@ impl JsSettings {
         node: Node,
     ) -> impl Fn(&mut Window, &mut App) -> AnyElement + 'static {
         let handlers = self.handlers();
-        move |_, cx| render_node(&node, &handlers, &mut 0, cx)
+        move |window, cx| render_node(&node, &handlers, &mut 0, None, false, window, cx)
     }
 
     /// Handlers that render the tab again after they run, since they may
@@ -395,7 +397,9 @@ fn toggle(node: &Node) -> Option<(bool, Option<usize>)> {
 
 fn text(node: &Node) -> Option<(SharedString, Option<usize>)> {
     match node {
-        Node::TextInput { value, on_change } => Some((value.clone().into(), *on_change)),
+        Node::TextInput {
+            value, on_change, ..
+        } => Some((value.clone().into(), *on_change)),
         _ => None,
     }
 }

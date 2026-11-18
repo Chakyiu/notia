@@ -41,7 +41,7 @@ const MEMORY_LIMIT: usize = 256 * 1024 * 1024;
 const PRELUDE: &str = include_str!("prelude.js");
 const API_MODULE: &str = "notia";
 const API_SOURCE: &str = r#"const api = globalThis[Symbol.for("notia")];
-export const { Plugin, Notice, ui } = api;
+export const { Plugin, Notice, ui, requestUrl } = api;
 export default api;
 "#;
 
@@ -92,6 +92,8 @@ pub(crate) struct HostState {
     /// own changes to the vault cause.
     queued_events: Vec<(String, Value)>,
     pub(crate) intervals: HashMap<u64, Task<()>>,
+    /// HTTP calls started by the plugin that have not finished.
+    pub(crate) in_flight: usize,
     last_error: Option<(String, Instant)>,
     pub(crate) file_icons: crate::file_icons::FileIconSlot,
 }
@@ -103,7 +105,7 @@ pub(crate) struct JsRuntime {
     _runtime: rquickjs::Runtime,
     deadline: Rc<Cell<Option<Instant>>>,
     running: Cell<bool>,
-    unloaded: Cell<bool>,
+    pub(crate) unloaded: Cell<bool>,
     pub(crate) state: RefCell<HostState>,
 }
 
@@ -289,7 +291,7 @@ impl JsRuntime {
         }
     }
 
-    fn dispatch(
+    pub(crate) fn dispatch(
         &self,
         kind: &str,
         target: &str,

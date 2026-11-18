@@ -130,6 +130,32 @@ declare module "notia" {
     constructor(message: string);
   }
 
+  /** What `requestUrl` sends. Only `http` and `https` addresses are accepted. */
+  export interface RequestUrlOptions {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    /** A string. JSON is `JSON.stringify`'d by the plugin. At most 2 MB. */
+    body?: string;
+    /** Milliseconds. The default is 120 seconds, and the longest is 180. */
+    timeout?: number;
+  }
+
+  /** A finished HTTP reply. A status such as 404 still resolves. */
+  export interface RequestUrlResponse {
+    status: number;
+    headers: Record<string, string>;
+    text: string;
+  }
+
+  /**
+   * Fetches an address. The window stays responsive while it runs, and at
+   * most eight requests from one plugin are open at once. The promise
+   * rejects when the address is refused or the server cannot be reached.
+   * The reply is at most 4 MB of text.
+   */
+  export function requestUrl(request: RequestUrlOptions): Promise<RequestUrlResponse>;
+
   export interface Command {
     /** Unique within the plugin. */
     id: string;
@@ -205,7 +231,10 @@ declare module "notia" {
     row(children: Child[], options?: { wrap?: boolean }): Element;
     /** A small section heading, like those of the core panels. */
     heading(text: string): Element;
-    text(text: string, options?: { muted?: boolean; bold?: boolean; small?: boolean }): Element;
+    text(
+      text: string,
+      options?: { muted?: boolean; bold?: boolean; small?: boolean; danger?: boolean },
+    ): Element;
     markdown(source: string): Element;
     button(
       label: string,
@@ -230,17 +259,31 @@ declare module "notia" {
     setting(name: string, control: Child, options?: { description?: string }): Element;
     /** A switch. */
     toggle(value: boolean, onChange: (value: boolean) => unknown): Element;
-    /** A text field. `onChange` runs as the text changes. */
-    textInput(value: string, onChange: (value: string) => unknown): Element;
+    /**
+     * A text field. `onChange` runs as the text changes. In a panel, the field
+     * keeps what the user types until `render` passes a different value.
+     */
+    textInput(
+      value: string,
+      onChange: (value: string) => unknown,
+      options?: { placeholder?: string },
+    ): Element;
     /**
      * A multi-line text field. `onChange` runs as the text changes.
-     * `id` keeps the field when the settings page renders again, and `rows`
-     * is how tall it is.
+     * `id` keeps the field when the view renders again, and `rows` is how
+     * tall it is. `placeholder` shows while it is empty. `onSubmit` runs
+     * when Enter is pressed; Shift+Enter inserts a line. In a panel the
+     * field keeps keystrokes until `render` passes a different value.
      */
     textArea(
       value: string,
       onChange: (value: string) => unknown,
-      options?: { id?: string; rows?: number },
+      options?: {
+        id?: string;
+        rows?: number;
+        placeholder?: string;
+        onSubmit?: (value: string) => unknown;
+      },
     ): Element;
     /** A number field that keeps the value between `min` and `max`. */
     numberInput(
@@ -248,6 +291,12 @@ declare module "notia" {
       onChange: (value: number) => unknown,
       options?: { min?: number; max?: number; step?: number },
     ): Element;
+    /**
+     * A scrolling body with a footer that stays at the bottom of a sidebar
+     * panel. `body` and `footer` are elements or arrays of them. A chat uses
+     * it so the messages scroll and the field stays put.
+     */
+    dock(body: Child | Child[], footer: Child | Child[]): Element;
     /** A menu of options: values, `[value, label]` pairs, or `{ value, label }`. */
     dropdown(
       value: string,
@@ -462,6 +511,11 @@ declare module "notia" {
     resolveLink(target: string, from?: string | null): string | null;
   }
 
-  const api: { Plugin: typeof Plugin; Notice: typeof Notice; ui: typeof ui };
+  const api: {
+    Plugin: typeof Plugin;
+    Notice: typeof Notice;
+    ui: typeof ui;
+    requestUrl: typeof requestUrl;
+  };
   export default api;
 }

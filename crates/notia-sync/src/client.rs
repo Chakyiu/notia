@@ -257,12 +257,11 @@ fn status_error(status: u16, body: &[u8]) -> SyncError {
     if status == 413 {
         return SyncError::new("the server refused a file that is too large");
     }
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) {
-        if let Some(message) = value.get("error").and_then(|error| error.as_str()) {
-            if !message.is_empty() {
-                return SyncError::new(message.to_string());
-            }
-        }
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body)
+        && let Some(message) = value.get("error").and_then(|error| error.as_str())
+        && !message.is_empty()
+    {
+        return SyncError::new(message.to_string());
     }
     SyncError::new(format!("the server returned HTTP {status}"))
 }

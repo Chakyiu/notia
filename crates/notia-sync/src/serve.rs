@@ -51,22 +51,8 @@ fn handle(store: &Store, token: &str, mut request: tiny_http::Request) {
     let method = method_name(request.method());
     let url = request.url().to_string();
     let route = route(&url);
-    let auth = header(&request, "authorization");
-    let vault_header = header(&request, "x-notia-vault");
-    let base_header = header(&request, "x-notia-base");
-    let mtime_header = header(&request, "x-notia-mtime");
 
-    let reply = dispatch(
-        store,
-        token,
-        method,
-        route,
-        auth.as_deref(),
-        vault_header.as_deref(),
-        base_header.as_deref(),
-        mtime_header.as_deref(),
-        &mut request,
-    );
+    let reply = dispatch(store, token, method, route, &mut request);
     let status = reply.status;
     let path = url.split('?').next().unwrap_or(&url);
     eprintln!("notia-sync-server: {method} {path} {status}");
@@ -115,12 +101,16 @@ fn dispatch(
     token: &str,
     method: &str,
     route: Route,
-    authorization: Option<&str>,
-    vault_header: Option<&str>,
-    base_header: Option<&str>,
-    mtime_header: Option<&str>,
     request: &mut tiny_http::Request,
 ) -> Reply {
+    let authorization = header(request, "authorization");
+    let vault_header = header(request, "x-notia-vault");
+    let base_header = header(request, "x-notia-base");
+    let mtime_header = header(request, "x-notia-mtime");
+    let authorization = authorization.as_deref();
+    let vault_header = vault_header.as_deref();
+    let base_header = base_header.as_deref();
+    let mtime_header = mtime_header.as_deref();
     if matches!(route, Route::Health) {
         return if method == "GET" {
             Reply::json(200, serde_json::json!({ "ok": true }))

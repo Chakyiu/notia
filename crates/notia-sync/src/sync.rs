@@ -248,10 +248,10 @@ impl ServerGen {
     }
 
     fn cursor(&self) -> Option<RemoteCursor> {
-        if self.live {
-            if let Some(value) = self.value {
-                return Some(RemoteCursor::Generation(value));
-            }
+        if self.live
+            && let Some(value) = self.value
+        {
+            return Some(RemoteCursor::Generation(value));
         }
         if !self.mutated {
             return Some(RemoteCursor::Manifest(self.prior_digest.clone()));

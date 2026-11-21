@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Formatting is identical on every OS. Fail here before the matrix so a
+  # rustfmt slip does not start three full clippy and test builds.
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # third_party/gpui-component is gitignored. Fetch it before Cargo reads the patch.
+      - name: Fetch the gpui-component patch
+        shell: bash
+        run: bash scripts/fetch-gpui-component.sh
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+  clippy-and-test:
+    name: ${{ matrix.os }}
+    needs: fmt
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # mesa-vulkan-drivers provides lavapipe. The headless UI test needs a
+      # Vulkan adapter, and ubuntu-latest has none until this package is installed.
+      - name: Install Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libxcb1-dev libvulkan-dev libssl-dev cmake g++ \
+            libfontconfig1-dev mesa-vulkan-drivers
+
+      # third_party/gpui-component is gitignored. Fetch it before any Cargo
+      # command, including the metadata call inside Swatinem/rust-cache.
+      - name: Fetch the gpui-component patch
+        shell: bash
+        run: bash scripts/fetch-gpui-component.sh
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Existing clippy findings are widespread (collapsible if, argument
+      # counts, unused imports, and more that only show up after earlier
+      # crates compile). Report them, and do not fail the job on warnings.
+      - name: cargo clippy
+        shell: bash
+        run: cargo clippy --workspace --all-targets
+
+      - name: cargo test
+        shell: bash
+        run: cargo test --workspace

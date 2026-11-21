@@ -4,24 +4,34 @@
 
 Notia is a note-taking app. Notes are plain Markdown files in a folder on your computer, called a vault. The file list, search, history, outline, backlinks, status bar, and themes are plugins, and each one can be turned off.
 
-```
-cargo run -p notia
-cargo run -p notia -- ~/Notes
-```
-
-A folder on the command line opens that vault. Otherwise Notia opens the vault from last time, or asks where a new one should live. An empty vault starts with a few notes that explain the window.
-
 ![The Welcome note in preview, with the file list and outline](docs/reading.png)
 
 ## Build
 
 Notia needs Rust 1.88 or newer. The 2024 edition needs 1.85, and `let` chains in conditions need 1.88.
 
+The workspace patches `gpui-component` to `third_party/gpui-component`, and that directory is gitignored, so fetch it once before the first Cargo command. The patch in `patches/gpui-component-menu-gap.patch` widens the gaps between context-menu icons from 4px to 8px:
+
+```
+bash scripts/fetch-gpui-component.sh
+```
+
+The script downloads and patches the crate, and leaves a tree that is already there alone, so local edits survive a second run.
+
 On Debian and Ubuntu, the GUI libraries are:
 
 ```
 sudo apt-get install pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcb1-dev libvulkan-dev libssl-dev cmake g++ libfontconfig1-dev
 ```
+
+Then run Notia from the repository root:
+
+```
+cargo run -p notia
+cargo run -p notia -- ~/Notes
+```
+
+A folder on the command line opens that vault. Otherwise Notia opens the vault from last time, or asks where a new one should live. An empty vault starts with a few notes that explain the window.
 
 Release images go to `dist/`:
 

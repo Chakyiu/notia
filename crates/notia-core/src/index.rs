@@ -7,6 +7,19 @@ use std::{
 
 use crate::{FileTree, Link, NoteMeta, Vault, VaultPath, parse_note};
 
+/// The file state needed to decide whether a note may have changed.
+///
+/// Modification time alone is not enough: on Windows a file's last-write
+/// time only moves on system timer ticks (~15.6 ms), so a note created and
+/// then rewritten within one tick keeps the same mtime and would look
+/// unchanged. The byte length breaks that tie; it costs no extra syscall
+/// because the metadata is read for the time anyway.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoteStamp {
+    pub modified: Option<SystemTime>,
+    pub len: u64,
+}
+
 /// A note's content and parsed metadata, as last read from disk.
 #[derive(Clone, Debug)]
 pub struct IndexedNote {
@@ -141,11 +154,19 @@ impl VaultIndex {
         names
     }
 
-    /// The modification time the index holds for every note.
-    pub fn snapshot(&self) -> HashMap<VaultPath, Option<SystemTime>> {
+    /// The file state the index holds for every note.
+    pub fn snapshot(&self) -> HashMap<VaultPath, NoteStamp> {
         self.notes
             .iter()
-            .map(|(path, note)| (path.clone(), note.modified))
+            .map(|(path, note)| {
+                (
+                    path.clone(),
+                    NoteStamp {
+                        modified: note.modified,
+                        len: note.text.len() as u64,
+                    },
+                )
+            })
             .collect()
     }
 
@@ -155,22 +176,24 @@ impl VaultIndex {
     pub fn read_changes(
         vault: &Vault,
         tree: &FileTree,
-        known: &HashMap<VaultPath, Option<SystemTime>>,
+        known: &HashMap<VaultPath, NoteStamp>,
     ) -> IndexChanges {
         let notes = tree.notes();
         let mut changes = IndexChanges::default();
         for path in &notes {
-            let modified = vault.modified(path);
+            let Some(stat) = vault.stat(path) else {
+                continue;
+            };
             if known
                 .get(path)
-                .is_some_and(|&known| known.is_some() && known == modified)
+                .is_some_and(|known| known.modified.is_some() && *known == stat)
             {
                 continue;
             }
             if let Ok(text) = vault.read_note(path) {
                 changes
                     .updated
-                    .push(IndexedNote::new(path.clone(), text, modified));
+                    .push(IndexedNote::new(path.clone(), text, stat.modified));
             }
         }
         let present: HashSet<&VaultPath> = notes.iter().collect();
@@ -477,6 +500,20 @@ mod tests {
 
         let unchanged = VaultIndex::read_changes(&vault, &vault.scan().unwrap(), &index.snapshot());
         assert!(unchanged.is_empty());
+
+        // A rewrite whose mtime lands on the same value (Windows updates last-
+        // write time only on system timer ticks) must still re-index, so the
+        // byte length is part of the change check.
+        std::fs::write(vault.abs_path(&"a.md".into()), "[[b]] extended").unwrap();
+        let rewritten = VaultIndex::read_changes(&vault, &vault.scan().unwrap(), &index.snapshot());
+        assert_eq!(
+            rewritten
+                .updated()
+                .map(|path| path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.md"]
+        );
+        index.apply(rewritten);
 
         std::fs::remove_file(vault.abs_path(&"b.md".into())).unwrap();
         let removed = VaultIndex::read_changes(&vault, &vault.scan().unwrap(), &index.snapshot());

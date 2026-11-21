@@ -13,6 +13,32 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
+# The workspace version in Cargo.toml is the single source of truth. The
+# committed mobile/ios/Info.plist carries a copy so the Xcode project opens
+# with a sane value; the built bundle is stamped from Cargo.toml below.
+version="$(awk '
+    { sub(/\r$/, "") }
+    /^\[/ { in_package = ($0 == "[workspace.package]"); next }
+    in_package && /^version[[:space:]]*=/ {
+        sub(/^version[[:space:]]*=[[:space:]]*"/, "")
+        sub(/"[[:space:]]*$/, "")
+        print
+        exit
+    }
+' Cargo.toml)"
+if [[ -z "$version" ]]; then
+    printf 'package-ios: no [workspace.package] version in Cargo.toml\n' >&2
+    exit 1
+fi
+
+# The committed plist is only a readable fallback; say so when it drifts.
+committed_version="$(sed -n '/<key>CFBundleShortVersionString<\/key>/{n;s/.*<string>\(.*\)<\/string>.*/\1/p;}' \
+    mobile/ios/Info.plist)"
+if [[ -n "$committed_version" && "$committed_version" != "$version" ]]; then
+    printf 'package-ios: mobile/ios/Info.plist says %s, Cargo.toml says %s; the built app uses %s\n' \
+        "$committed_version" "$version" "$version" >&2
+fi
+
 if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
     if ! xcodebuild -version >/dev/null 2>&1; then
         export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -43,6 +69,13 @@ rm -rf "$app"
 mkdir -p "$app"
 cp "$target_dir/$triple/release/notia" "$app/notia"
 cp "$root/mobile/ios/Info.plist" "$app/Info.plist"
+# Stamp the built bundle so the app's version always matches the release,
+# even when the committed plist has fallen behind.
+if command -v xcrun >/dev/null 2>&1; then
+    xcrun PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Info.plist"
+else
+    printf 'package-ios: xcrun is unavailable, keeping the Info.plist version\n' >&2
+fi
 codesign --force --sign - "$app"
 printf 'Built %s\n' "$app"
 

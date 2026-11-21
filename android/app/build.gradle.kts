@@ -4,6 +4,30 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// versionName comes from the workspace version in ../Cargo.toml, so bumping
+// the release version there is the only edit a release needs. Keep that value
+// numeric (one to four dot-separated integers); Android rejects suffixes such
+// as -rc.1. versionCode is deliberately not derived from it: the Play Store
+// needs a plain integer that grows with every upload, so it moves on its own.
+val notiaVersion: String = run {
+    val manifest = rootProject.projectDir.parentFile.resolve("Cargo.toml")
+    require(manifest.isFile) { "Missing ${manifest.path}; run Gradle from the Notia checkout." }
+    var inWorkspacePackage = false
+    var found: String? = null
+    manifest.readLines().forEach { raw ->
+        val line = raw.trim()
+        if (line.startsWith("[")) {
+            inWorkspacePackage = line == "[workspace.package]"
+        } else if (inWorkspacePackage && found == null) {
+            found = Regex("^version\\s*=\\s*\"([^\"]+)\"")
+                .find(line)
+                ?.groupValues
+                ?.get(1)
+        }
+    }
+    found ?: error("No [workspace.package] version found in ${manifest.path}.")
+}
+
 android {
     namespace = "app.notia.mobile"
     compileSdk = 35
@@ -13,7 +37,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.2.0"
+        versionName = notiaVersion
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }

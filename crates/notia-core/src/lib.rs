@@ -10,7 +10,7 @@ mod search;
 mod vault;
 
 pub use fuzzy::fuzzy_score;
-pub use index::{Backlink, IndexChanges, IndexedNote, TagCount, VaultIndex};
+pub use index::{Backlink, IndexChanges, IndexedNote, NoteStamp, TagCount, VaultIndex};
 pub use note::{Heading, Link, LinkKind, NoteMeta, parse_note};
 pub use path::VaultPath;
 pub use search::{FileMatches, LineMatch, SearchQuery, search};

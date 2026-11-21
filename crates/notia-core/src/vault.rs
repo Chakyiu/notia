@@ -133,6 +133,17 @@ impl Vault {
             .ok()
     }
 
+    /// Modification time and byte length in one metadata call, or `None`
+    /// when the file cannot be stat'ed. See [`crate::NoteStamp`] for why
+    /// both are needed.
+    pub fn stat(&self, path: &VaultPath) -> Option<crate::NoteStamp> {
+        let meta = fs::metadata(self.abs_path(path)).ok()?;
+        Some(crate::NoteStamp {
+            modified: meta.modified().ok(),
+            len: meta.len(),
+        })
+    }
+
     /// When the file was created. `None` when the file is missing or the
     /// platform does not record a creation time.
     pub fn created(&self, path: &VaultPath) -> Option<SystemTime> {

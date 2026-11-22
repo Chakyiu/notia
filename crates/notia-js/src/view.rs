@@ -278,6 +278,16 @@ impl JsPanel {
     }
 }
 
+/// A panel scrolled this close to its bottom still follows new content.
+const FOLLOW_MARGIN: f32 = 32.0;
+
+/// Whether a panel is at, or within `margin` of, its bottom. GPUI's scroll
+/// offset is negative once scrolled down, and `max_offset` is the positive
+/// distance from the top to the bottom of the content.
+fn is_pinned_to_bottom(offset: Pixels, max_offset: Pixels, margin: Pixels) -> bool {
+    max_offset + offset <= margin
+}
+
 impl Render for JsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // A fresh render is one the plugin asked for. Text fields take their
@@ -343,7 +353,15 @@ impl Render for JsPanel {
                 cx,
             );
             let border = cx.theme().border;
-            if fresh {
+            // Follow new content only while the reader is at the bottom, so a
+            // streaming refresh does not yank a reader who scrolled up.
+            if fresh
+                && is_pinned_to_bottom(
+                    self.scroll.offset().y,
+                    self.scroll.max_offset().y,
+                    px(FOLLOW_MARGIN),
+                )
+            {
                 self.scroll.scroll_to_bottom();
             }
             let mut column = panel.size_full().min_h_0();
@@ -1129,5 +1147,28 @@ impl PanelFields {
                 state.set_value(value.to_string(), window, cx)
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // No `use super::*` here: view.rs glob-imports gpui, whose `test`
+    // attribute would shadow the built-in one.
+    use gpui_kit::px;
+
+    use super::is_pinned_to_bottom;
+
+    #[test]
+    fn a_view_at_the_bottom_follows_new_content() {
+        assert!(is_pinned_to_bottom(px(-500.), px(500.), px(32.)));
+        assert!(is_pinned_to_bottom(px(-480.), px(500.), px(32.)));
+        // Nothing to scroll is at the bottom by definition.
+        assert!(is_pinned_to_bottom(px(0.), px(0.), px(32.)));
+    }
+
+    #[test]
+    fn a_view_scrolled_up_keeps_its_place() {
+        assert!(!is_pinned_to_bottom(px(-200.), px(500.), px(32.)));
+        assert!(!is_pinned_to_bottom(px(0.), px(500.), px(32.)));
     }
 }

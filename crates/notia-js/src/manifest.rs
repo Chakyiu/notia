@@ -77,7 +77,17 @@ impl Found {
 /// Plugins write `data.json` when settings change and `sessions.json` when a
 /// chat is saved. A `.css` file is a stylesheet the plugin reads itself.
 /// None of these is the plugin's code, so saving one must not reload it.
+///
+/// A path inside a folder named `index` counts too: the AI agent rewrites its
+/// embedding index there while the panel is open, and those writes are not
+/// code either.
 pub(crate) fn is_data_file(path: &Path) -> bool {
+    if path
+        .components()
+        .any(|component| component.as_os_str() == "index")
+    {
+        return true;
+    }
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| {
@@ -220,7 +230,14 @@ mod tests {
         fs::write(dir.join("good/data.json"), "{}").unwrap();
         fs::write(dir.join("good/sessions.json"), "{}").unwrap();
         fs::write(dir.join("good/theme.css"), ".theme { background: #111; }").unwrap();
+        fs::create_dir_all(dir.join("good/index")).unwrap();
+        fs::write(dir.join("good/index/manifest.json"), r#"{ "parts": 0 }"#).unwrap();
+        fs::write(dir.join("good/index/part-0.json"), r#"{ "chunks": [] }"#).unwrap();
         assert_eq!(discover(&dir)[1].fingerprint, before);
+
+        // A file that is the plugin's code still reloads it.
+        fs::write(dir.join("good/main.js"), "export default class {}").unwrap();
+        assert_ne!(discover(&dir)[1].fingerprint, before);
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -327,7 +327,8 @@ non-data file triggers a reload after a 300 ms settle period
 (`loader.rs::watch`); reload re-reads manifests and re-registers changed
 plugins, which re-runs `onload` of the enabled ones. `data.json`,
 `sessions.json`, `*.notia-tmp` and `.css` files are *data files*: saving
-them does not reload the plugin (`manifest.rs::is_data_file`). A manifest
+them does not reload the plugin, and neither does anything inside a
+folder named `index` (`manifest.rs::is_data_file`). A manifest
 plus modification-time fingerprint avoids reloading when nothing changed.
 
 **What persists across a reload** is the enabled state (in

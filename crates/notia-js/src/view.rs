@@ -51,6 +51,66 @@ fn default_rows() -> usize {
     14
 }
 
+/// Largest `gap` a plugin can set, in px. Anything past this clamps.
+const MAX_GAP: f32 = 256.;
+/// Largest `minHeight` or `rowHeight`, in px.
+const MAX_LENGTH: f32 = 1024.;
+/// Equal tracks in one row. Capped so a bad value cannot build a huge track list.
+const MAX_COLUMNS: u16 = 31;
+/// A marker dot: 4px, drawn 3px under the label, inside the button.
+const MARKER_DOT: f32 = 4.;
+const MARKER_GAP: f32 = 3.;
+/// Tall enough for the label and the dot. The stock button is 24px and would clip it.
+const MARKER_BUTTON: f32 = 36.;
+
+/// `None` keeps the 8px gap rows and columns have always used.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StackGap {
+    Legacy,
+    Px(f32),
+}
+
+fn explicit_px(value: Option<f32>, max: f32) -> Option<f32> {
+    value.and_then(|value| value.is_finite().then_some(value.clamp(0., max)))
+}
+
+fn stack_gap(value: Option<f32>) -> StackGap {
+    match explicit_px(value, MAX_GAP) {
+        Some(value) => StackGap::Px(value),
+        None => StackGap::Legacy,
+    }
+}
+
+fn with_stack_gap<E: Styled>(element: E, gap: Option<f32>) -> E {
+    match stack_gap(gap) {
+        StackGap::Legacy => element.gap_2(),
+        StackGap::Px(value) => element.gap(px(value)),
+    }
+}
+
+fn grid_track_count(columns: u16) -> u16 {
+    columns.clamp(1, MAX_COLUMNS)
+}
+
+/// `"start"` left-aligns a cell. Anything else centers it, so stacked rows
+/// of the same width share one vertical axis per column.
+fn cell_centers(align: Option<&str>) -> bool {
+    align != Some("start")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MarkerTone {
+    Accent,
+    PrimaryForeground,
+}
+
+fn marker_tone(tone: Option<&str>) -> MarkerTone {
+    match tone {
+        Some("primaryForeground") => MarkerTone::PrimaryForeground,
+        _ => MarkerTone::Accent,
+    }
+}
+
 /// An element of a panel or settings tab, as made by the `ui` functions of
 /// the plugin API. Handlers are indices into the view's handlers.
 #[derive(Clone, Deserialize)]
@@ -59,6 +119,12 @@ pub(crate) enum Node {
     Column {
         #[serde(default)]
         children: Vec<Node>,
+        /// Px. Omitted, the column keeps its 8px gap.
+        #[serde(default)]
+        gap: Option<f32>,
+        /// Px. Keeps a block the same height when its contents change.
+        #[serde(default, rename = "minHeight")]
+        min_height: Option<f32>,
     },
     Row {
         #[serde(default)]
@@ -69,6 +135,22 @@ pub(crate) enum Node {
         /// Puts the first child at the start and the last at the end.
         #[serde(default)]
         spread: bool,
+        /// Px. Omitted, the row keeps its 8px gap.
+        #[serde(default)]
+        gap: Option<f32>,
+        /// When set, children sit in this many equal tracks
+        /// (`repeat(n, minmax(0, 1fr))`). Omitted, the row stays a flex row:
+        /// a host from before this field ignores it and draws that same flex row.
+        #[serde(default)]
+        columns: Option<u16>,
+        /// Px. Every cell is this tall, so stacked weeks share one pitch.
+        /// Read only when `columns` is set.
+        #[serde(default, rename = "rowHeight")]
+        row_height: Option<f32>,
+        /// `"start"` left-aligns a cell. Anything else centers it.
+        /// Read only when `columns` is set.
+        #[serde(default)]
+        align: Option<String>,
     },
     /// A bordered field: a question, and the controls under it.
     Composer {
@@ -109,6 +191,15 @@ pub(crate) enum Node {
         tooltip: Option<String>,
         #[serde(default, rename = "onClick")]
         on_click: Option<usize>,
+        /// Label uses the theme's muted foreground. The button stays clickable.
+        #[serde(default)]
+        muted: bool,
+        /// A 4px dot under the label, drawn inside the button.
+        #[serde(default)]
+        dot: bool,
+        /// `"accent"` (default) or `"primaryForeground"` (ink on a filled primary button).
+        #[serde(default, rename = "dotTone")]
+        dot_tone: Option<String>,
     },
     List {
         #[serde(default)]
@@ -272,6 +363,8 @@ impl JsPanel {
             bar,
             content: Ok(Node::Column {
                 children: Vec::new(),
+                gap: None,
+                min_height: None,
             }),
             scroll: ScrollHandle::new(),
         }
@@ -467,29 +560,72 @@ pub(crate) fn render_node(
         ElementId::from(("js-element", *ids))
     };
     match node {
-        Node::Column { children } => v_flex()
-            .gap_2()
-            .children(
-                children
-                    .iter()
-                    .map(|child| render_node(child, handlers, ids, fields, fresh, window, cx)),
-            )
-            .into_any_element(),
+        Node::Column {
+            children,
+            gap,
+            min_height,
+        } => {
+            let mut column = with_stack_gap(v_flex(), *gap);
+            if let Some(height) = explicit_px(*min_height, MAX_LENGTH) {
+                column = column.min_h(px(height));
+            }
+            column
+                .children(
+                    children
+                        .iter()
+                        .map(|child| render_node(child, handlers, ids, fields, fresh, window, cx)),
+                )
+                .into_any_element()
+        }
         Node::Row {
             children,
             wrap,
             spread,
-        } => h_flex()
-            .items_center()
-            .when(*spread, |row| row.w_full().justify_between())
-            .when(*wrap, |row| row.gap_2().flex_wrap())
-            .when(!*wrap, |row| row.gap_2().flex_nowrap())
-            .children(
-                children
-                    .iter()
-                    .map(|child| render_node(child, handlers, ids, fields, fresh, window, cx)),
-            )
-            .into_any_element(),
+            gap,
+            columns,
+            row_height,
+            align,
+        } => {
+            if let Some(columns) = *columns {
+                // Equal tracks. `spread` and `wrap` stay on the node so a host
+                // that ignores `columns` still lays the same children out as a flex row.
+                let center = cell_centers(align.as_deref());
+                let height = explicit_px(*row_height, MAX_LENGTH);
+                with_stack_gap(
+                    div().w_full().grid().grid_cols(grid_track_count(columns)),
+                    *gap,
+                )
+                .children(children.iter().map(|child| {
+                    let child = render_node(child, handlers, ids, fields, fresh, window, cx);
+                    let mut cell = div().min_w_0().flex().items_center();
+                    cell = if center {
+                        cell.justify_center()
+                    } else {
+                        cell.justify_start()
+                    };
+                    if let Some(height) = height {
+                        cell = cell.h(px(height)).min_h(px(height));
+                    }
+                    cell.child(child)
+                }))
+                .into_any_element()
+            } else {
+                with_stack_gap(
+                    h_flex()
+                        .items_center()
+                        .when(*spread, |row| row.w_full().justify_between())
+                        .when(*wrap, |row| row.flex_wrap())
+                        .when(!*wrap, |row| row.flex_nowrap()),
+                    *gap,
+                )
+                .children(
+                    children
+                        .iter()
+                        .map(|child| render_node(child, handlers, ids, fields, fresh, window, cx)),
+                )
+                .into_any_element()
+            }
+        }
         Node::TabBar { tabs, actions } => {
             h_flex()
                 .w_full()
@@ -614,33 +750,60 @@ pub(crate) fn render_node(
             variant,
             tooltip,
             on_click,
-        } => Button::new(next_id())
-            .when(
-                label.is_empty() && variant.as_deref() != Some("primary"),
-                |button| button.xsmall(),
-            )
-            .when(
-                !label.is_empty() || variant.as_deref() == Some("primary"),
-                |button| button.small(),
-            )
-            .when(
-                label.is_empty() && variant.as_deref() == Some("primary"),
-                |button| button.rounded(px(999.)),
-            )
-            .map(|button| match variant.as_deref() {
-                Some("primary") => button.primary(),
-                Some("ghost") => button.ghost(),
-                _ => button.outline(),
-            })
-            .when(!label.is_empty(), |button| button.label(label.clone()))
-            .when_some(tooltip.clone(), |button, tip| button.tooltip(tip))
-            .when_some(icon_name.as_deref(), |button, name| {
-                button.icon(icon(Some(name)))
-            })
-            .when_some(*on_click, |button, handler| {
-                button.on_click(handlers.on_click(handler))
-            })
-            .into_any_element(),
+            muted: is_muted,
+            dot,
+            dot_tone,
+        } => {
+            // A label element carries the muted color, so the variant still
+            // draws the fill, ring and hover. The dot is a child of the
+            // button, which is what keeps it on top of a filled primary button.
+            let custom = *dot || (*is_muted && !label.is_empty());
+            let mut button = Button::new(next_id())
+                .when(
+                    label.is_empty() && variant.as_deref() != Some("primary"),
+                    |button| button.xsmall(),
+                )
+                .when(
+                    !label.is_empty() || variant.as_deref() == Some("primary"),
+                    |button| button.small(),
+                )
+                .when(
+                    label.is_empty() && variant.as_deref() == Some("primary"),
+                    |button| button.rounded(px(999.)),
+                )
+                .map(|button| match variant.as_deref() {
+                    Some("primary") => button.primary(),
+                    Some("ghost") => button.ghost(),
+                    _ => button.outline(),
+                })
+                .when(!custom && !label.is_empty(), |button| {
+                    button.label(label.clone())
+                });
+            if *dot {
+                let accent = theme.accent;
+                let on_primary = theme.button_primary_foreground;
+                // Reapplied after the variant's fixed 24px height, which would clip the dot.
+                button = button.h(px(MARKER_BUTTON)).child(button_marker(
+                    label,
+                    *is_muted,
+                    dot_tone.as_deref(),
+                    muted,
+                    accent,
+                    on_primary,
+                ));
+            } else if *is_muted && !label.is_empty() {
+                button = button.child(muted_button_label(label, muted));
+            }
+            button
+                .when_some(tooltip.clone(), |button, tip| button.tooltip(tip))
+                .when_some(icon_name.as_deref(), |button, name| {
+                    button.icon(icon(Some(name)))
+                })
+                .when_some(*on_click, |button, handler| {
+                    button.on_click(handlers.on_click(handler))
+                })
+                .into_any_element()
+        }
         Node::List { items, compact } => {
             let hover = theme.list_hover;
             let radius = theme.radius;
@@ -813,9 +976,50 @@ pub(crate) fn render_node(
 fn frames_composer(node: &Node) -> bool {
     match node {
         Node::Composer { .. } => true,
-        Node::Column { children } => children.iter().any(frames_composer),
+        Node::Column { children, .. } => children.iter().any(frames_composer),
+        // Equal tracks are still a `row`. Only that mode is a new container;
+        // a flex row keeps the old result and does not frame the dock.
+        Node::Row {
+            children, columns, ..
+        } if columns.is_some() => children.iter().any(frames_composer),
         _ => false,
     }
+}
+
+fn muted_button_label(text: &str, color: Hsla) -> Div {
+    div()
+        .text_color(color)
+        .font_weight(FontWeight::NORMAL)
+        .child(text.to_string())
+}
+
+fn button_marker(
+    text: &str,
+    muted_label: bool,
+    tone: Option<&str>,
+    muted: Hsla,
+    accent: Hsla,
+    on_primary: Hsla,
+) -> Div {
+    let dot = match marker_tone(tone) {
+        MarkerTone::Accent => accent,
+        MarkerTone::PrimaryForeground => on_primary,
+    };
+    v_flex()
+        .items_center()
+        .gap(px(MARKER_GAP))
+        .child(if muted_label {
+            muted_button_label(text, muted)
+        } else {
+            div().child(text.to_string())
+        })
+        .child(
+            div()
+                .size(px(MARKER_DOT))
+                .flex_none()
+                .rounded_full()
+                .bg(dot),
+        )
 }
 
 fn present(node: &Option<Box<Node>>) -> Node {
@@ -823,6 +1027,8 @@ fn present(node: &Option<Box<Node>>) -> Node {
         Some(node) => (**node).clone(),
         None => Node::Column {
             children: Vec::new(),
+            gap: None,
+            min_height: None,
         },
     }
 }
@@ -1155,6 +1361,7 @@ mod tests {
     // No `use super::*` here: view.rs glob-imports gpui, whose `test`
     // attribute would shadow the built-in one.
     use gpui_kit::px;
+    use rquickjs::CatchResultExt as _;
 
     use super::is_pinned_to_bottom;
 
@@ -1171,4 +1378,390 @@ mod tests {
         assert!(!is_pinned_to_bottom(px(-200.), px(500.), px(32.)));
         assert!(!is_pinned_to_bottom(px(0.), px(500.), px(32.)));
     }
+
+    #[test]
+    fn layout_decisions_keep_the_old_gap_and_clamp_the_new_one() {
+        assert_eq!(super::stack_gap(None), super::StackGap::Legacy);
+        assert_eq!(super::stack_gap(Some(f32::NAN)), super::StackGap::Legacy);
+        assert_eq!(super::stack_gap(Some(0.)), super::StackGap::Px(0.));
+        assert_eq!(super::stack_gap(Some(-4.)), super::StackGap::Px(0.));
+        assert_eq!(
+            super::stack_gap(Some(9_999.)),
+            super::StackGap::Px(super::MAX_GAP)
+        );
+
+        assert_eq!(super::grid_track_count(0), 1);
+        assert_eq!(super::grid_track_count(7), 7);
+        assert_eq!(super::grid_track_count(100), super::MAX_COLUMNS);
+
+        assert_eq!(super::explicit_px(Some(96.), super::MAX_LENGTH), Some(96.));
+        assert_eq!(
+            super::explicit_px(Some(5_000.), super::MAX_LENGTH),
+            Some(super::MAX_LENGTH)
+        );
+        assert_eq!(super::explicit_px(None, super::MAX_LENGTH), None);
+
+        assert!(super::cell_centers(None));
+        assert!(super::cell_centers(Some("center")));
+        assert!(!super::cell_centers(Some("start")));
+
+        assert_eq!(super::marker_tone(None), super::MarkerTone::Accent);
+        assert_eq!(
+            super::marker_tone(Some("accent")),
+            super::MarkerTone::Accent
+        );
+        assert_eq!(super::marker_tone(Some("nope")), super::MarkerTone::Accent);
+        assert_eq!(
+            super::marker_tone(Some("primaryForeground")),
+            super::MarkerTone::PrimaryForeground
+        );
+    }
+
+    #[test]
+    fn a_legacy_tree_still_decodes_without_the_new_fields() {
+        let node: super::Node = serde_json::from_str(
+            r#"{ "type": "column", "children": [
+                { "type": "row", "spread": true, "children": [
+                    { "type": "button", "label": "OK", "variant": "outline", "onClick": 0 }
+                ] },
+                { "type": "text", "text": "Hello" }
+            ] }"#,
+        )
+        .unwrap();
+        let super::Node::Column {
+            gap,
+            min_height,
+            children,
+        } = node
+        else {
+            panic!("root is a column");
+        };
+        assert_eq!((gap, min_height), (None, None));
+        let super::Node::Row {
+            wrap,
+            spread,
+            gap,
+            columns,
+            row_height,
+            align,
+            children: row,
+        } = &children[0]
+        else {
+            panic!("first child is a row");
+        };
+        assert_eq!((*wrap, *spread, *gap), (true, true, None));
+        assert!(columns.is_none() && row_height.is_none() && align.is_none());
+        let super::Node::Button {
+            label,
+            variant,
+            muted,
+            dot,
+            dot_tone,
+            on_click,
+            ..
+        } = &row[0]
+        else {
+            panic!("the row holds a button");
+        };
+        assert_eq!(label, "OK");
+        assert_eq!(variant.as_deref(), Some("outline"));
+        assert!(!*muted && !*dot && dot_tone.is_none());
+        assert_eq!(*on_click, Some(0));
+        assert!(matches!(children[1], super::Node::Text { .. }));
+        assert!(!super::frames_composer(&super::Node::Column {
+            children: Vec::new(),
+            gap: None,
+            min_height: None,
+        }));
+    }
+
+    #[test]
+    fn a_grid_node_type_stays_unsupported() {
+        let node: super::Node =
+            serde_json::from_str(r#"{ "type": "grid", "columns": 7, "children": [] }"#).unwrap();
+        assert!(matches!(node, super::Node::Unknown));
+    }
+
+    /// GALA-24: a missing `type` is not `Unknown`. Serde rejects the tree, which
+    /// is the whole-panel "invalid" path, and a bad field on a known node does too.
+    #[test]
+    fn a_node_without_a_type_or_with_a_bad_field_rejects_the_tree() {
+        let missing = serde_json::from_str::<super::Node>(r#"{ "children": [] }"#)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(missing.contains("type"), "{missing}");
+        let bad = serde_json::from_str::<super::Node>(
+            r#"{ "type": "row", "columns": "seven", "children": [] }"#,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(bad.contains("invalid type"), "{bad}");
+    }
+
+    #[test]
+    fn a_composer_inside_an_equal_track_row_still_frames_the_dock() {
+        let node: super::Node = serde_json::from_str(
+            r#"{ "type": "row", "columns": 7, "children": [
+                { "type": "composer", "children": [] }
+            ] }"#,
+        )
+        .unwrap();
+        assert!(super::frames_composer(&node));
+        let flex = super::Node::Row {
+            children: vec![super::Node::Composer {
+                children: Vec::new(),
+            }],
+            wrap: true,
+            spread: false,
+            gap: None,
+            columns: None,
+            row_height: None,
+            align: None,
+        };
+        assert!(!super::frames_composer(&flex));
+        let super::Node::Row {
+            columns,
+            gap,
+            row_height,
+            align,
+            ..
+        } = node
+        else {
+            panic!("decoded a row");
+        };
+        assert_eq!(columns, Some(7));
+        assert!(gap.is_none() && row_height.is_none() && align.is_none());
+    }
+
+    /// Runs the real prelude and renders two panels. This is the contract
+    /// `render_node` decodes; it does not paint the panel.
+    #[test]
+    fn the_plugin_api_emits_the_calendar_contract() {
+        let legacy = render_panel("legacy");
+        assert!(
+            !legacy.contains("minHeight")
+                && !legacy.contains("dot")
+                && !legacy.contains("muted")
+                && !legacy.contains("rowHeight")
+                && !legacy.contains("columns")
+                && !legacy.contains("grid"),
+            "{legacy}"
+        );
+        let legacy: super::Node = serde_json::from_str(&legacy).unwrap();
+        let super::Node::Column {
+            gap,
+            min_height,
+            children,
+        } = &legacy
+        else {
+            panic!("legacy root");
+        };
+        assert!(gap.is_none() && min_height.is_none());
+        let super::Node::Row {
+            spread,
+            gap,
+            columns,
+            row_height,
+            align,
+            ..
+        } = &children[0]
+        else {
+            panic!("legacy row");
+        };
+        assert!(
+            *spread
+                && gap.is_none()
+                && columns.is_none()
+                && row_height.is_none()
+                && align.is_none()
+        );
+
+        let calendar = render_panel("cal");
+        assert!(!calendar.contains("\"type\":\"grid\""), "{calendar}");
+        let calendar: super::Node = serde_json::from_str(&calendar).unwrap();
+        let super::Node::Column {
+            gap,
+            min_height,
+            children,
+        } = calendar
+        else {
+            panic!("calendar root");
+        };
+        assert_eq!(gap, Some(12.));
+        assert!(min_height.is_none());
+
+        let super::Node::Row {
+            spread,
+            columns,
+            gap,
+            row_height,
+            align,
+            children: weekdays,
+            ..
+        } = &children[0]
+        else {
+            panic!("weekday row");
+        };
+        assert_eq!(
+            (*spread, *columns, *gap, *row_height),
+            (true, Some(7), Some(0.), None)
+        );
+        assert!(align.is_none());
+        assert_eq!(weekdays.len(), 7);
+        assert!(matches!(&weekdays[0], super::Node::Text { text, .. } if text == "Su"));
+        assert!(matches!(&weekdays[6], super::Node::Text { text, .. } if text == "Sa"));
+
+        let super::Node::Row {
+            spread,
+            columns,
+            gap,
+            row_height,
+            children: days,
+            ..
+        } = &children[1]
+        else {
+            panic!("date row");
+        };
+        assert!(*spread);
+        assert_eq!(
+            (*columns, *gap, *row_height),
+            (Some(7), Some(0.), Some(36.))
+        );
+        assert_eq!(days.len(), 4);
+        assert!(matches!(
+            &days[0],
+            super::Node::Button { label, variant, muted: true, dot: false, .. }
+                if label == "1" && variant.as_deref() == Some("ghost")
+        ));
+        assert!(matches!(
+            &days[1],
+            super::Node::Button {
+                label,
+                variant,
+                muted: false,
+                dot: true,
+                dot_tone: Some(tone),
+                ..
+            } if label == "23" && variant.as_deref() == Some("primary") && tone == "primaryForeground"
+        ));
+        assert!(matches!(
+            &days[2],
+            super::Node::Button { label, dot: true, dot_tone: None, .. } if label == "25"
+        ));
+        assert!(matches!(
+            &days[3],
+            super::Node::Button { label, muted: false, dot: false, .. } if label == "30"
+        ));
+        assert!(matches!(children[2], super::Node::Separator));
+        let super::Node::Column {
+            gap,
+            min_height,
+            children: day,
+        } = &children[3]
+        else {
+            panic!("selected day");
+        };
+        assert_eq!((*gap, *min_height), (Some(8.), Some(96.)));
+        assert!(matches!(
+            &day[1],
+            super::Node::Text {
+                muted: true,
+                small: true,
+                ..
+            }
+        ));
+
+        let super::Node::Row {
+            columns,
+            gap,
+            row_height,
+            align,
+            ..
+        } = &children[4]
+        else {
+            panic!("clamped row");
+        };
+        assert_eq!(*columns, Some(1));
+        assert_eq!(*gap, Some(0.));
+        assert_eq!(*row_height, Some(super::MAX_LENGTH));
+        assert_eq!(align.as_deref(), Some("start"));
+    }
+
+    fn render_panel(id: &str) -> String {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        context.with(|ctx| {
+            let host = rquickjs::Function::new(
+                ctx.clone(),
+                |_ctx: rquickjs::Ctx<'_>, _method: String, _args: String| "null".to_string(),
+            )
+            .unwrap();
+            ctx.globals().set("__notiaHost", host).unwrap();
+            eval(&ctx, include_str!("prelude.js"));
+            eval(&ctx, PLUGIN);
+            let manifest = r#"{"id":"cal","name":"Cal","main":"main.js"}"#;
+            let boot = format!(
+                "__notiaStart(undefined, {})",
+                serde_json::to_string(manifest).unwrap()
+            );
+            let promise: rquickjs::Promise = ctx
+                .eval(boot)
+                .catch(&ctx)
+                .unwrap_or_else(|error| panic!("{error}"));
+            while ctx.execute_pending_job() {}
+            match promise.result::<rquickjs::Value>() {
+                Some(Ok(_)) => {}
+                Some(Err(error)) => panic!("onload failed: {error}"),
+                None => panic!("onload did not finish"),
+            }
+            let dispatch: rquickjs::Function = ctx.globals().get("__notiaDispatch").unwrap();
+            dispatch
+                .call(("render", id, ""))
+                .catch(&ctx)
+                .unwrap_or_else(|error| panic!("{error}"))
+        })
+    }
+
+    fn eval(ctx: &rquickjs::Ctx, source: &str) {
+        ctx.eval::<(), _>(source)
+            .catch(ctx)
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    const PLUGIN: &str = r#"
+const { Plugin, ui } = globalThis[Symbol.for("notia")];
+module.exports = class extends Plugin {
+  onload() {
+    this.addPanel({
+      id: "legacy",
+      title: "Legacy",
+      render: () => ui.column([
+        ui.row([ui.button("OK", () => {}, { variant: "outline" })], { spread: true }),
+        ui.button("Go", () => {}, { variant: "ghost", icon: "plus" }),
+      ]),
+    });
+    this.addPanel({
+      id: "cal",
+      title: "Calendar",
+      render: () => ui.column([
+        ui.row(["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"], { spread: true, columns: 7, gap: 0 }),
+        ui.row([
+          ui.button("1", () => {}, { variant: "ghost", muted: true }),
+          ui.button("23", () => {}, { variant: "primary", dot: true, dotTone: "primaryForeground" }),
+          ui.button("25", () => {}, { variant: "ghost", dot: "accent" }),
+          ui.button("30", () => {}, { variant: "ghost" }),
+        ], { spread: true, columns: 7, gap: 0, rowHeight: 36 }),
+        ui.separator(),
+        ui.column([
+          ui.text("Monday · 2026-11-30", { bold: true }),
+          ui.text("No notes on this day", { muted: true, small: true }),
+        ], { gap: 8, minHeight: 96 }),
+        ui.row([ui.text("edge")], { columns: 0, gap: -8, rowHeight: 5000, align: "start" }),
+      ], { gap: 12 }),
+    });
+  }
+};
+"#;
 }

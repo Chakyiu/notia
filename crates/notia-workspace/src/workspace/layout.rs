@@ -266,7 +266,7 @@ impl Workspace {
             tabs: self
                 .tabs
                 .iter()
-                .map(|tab| tab.editor.read(cx).path().clone())
+                .map(|tab| tab.document.path(cx).clone())
                 .collect(),
             active_tab: self.active_tab,
             split: self.split.as_ref().map(|split| SavedSplit {
@@ -275,7 +275,7 @@ impl Workspace {
                 tabs: split
                     .tabs
                     .iter()
-                    .map(|tab| tab.editor.read(cx).path().clone())
+                    .map(|tab| tab.document.path(cx).clone())
                     .collect(),
                 active_tab: split.active,
             }),

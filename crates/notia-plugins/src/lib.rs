@@ -33,6 +33,7 @@ pub use sync::SyncPlugin;
 pub use tags::TagsPlugin;
 pub use theme_gallery::ThemeGalleryPlugin;
 pub use word_count::WordCountPlugin;
+pub use notia_pdf_reader::PdfReaderPlugin;
 
 /// The default theme, which is always installed.
 const NOTIA_THEME: &str = include_str!("../themes/notia.json");
@@ -61,6 +62,7 @@ pub fn register(cx: &mut App) {
     PluginHost::register(DateTimePlugin, cx);
     PluginHost::register(ThemeGalleryPlugin, cx);
     PluginHost::register(SyncPlugin, cx);
+    PluginHost::register(PdfReaderPlugin, cx);
 }
 
 #[cfg(test)]

@@ -242,9 +242,8 @@ impl Workspace {
             .iter()
             .enumerate()
             .map(|(ix, tab)| {
-                let editor = tab.editor.read(cx);
-                let path = editor.path().clone();
-                let title = editor.title();
+                let path = tab.document.path(cx);
+                let title = tab.document.title(cx);
                 let insert_before = self
                     .tab_drop
                     .is_some_and(|slot| slot.pane == pane && slot.index == ix);
@@ -694,7 +693,7 @@ impl Workspace {
         let return_focus = self
             .pane_tabs(pane)
             .get(ix)
-            .map(|tab| tab.editor.focus_handle(cx));
+            .map(|tab| tab.document.focus_handle(cx));
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
             let menu = tab_context_menu(menu, workspace.clone(), pane, ix, count, split_open);
             match return_focus.clone() {
@@ -839,7 +838,7 @@ impl Workspace {
             .active_of(pane)
             .and_then(|ix| self.pane_tabs(pane).get(ix))
         {
-            Some(tab) => tab.editor.clone().into_any_element(),
+            Some(tab) => tab.document.clone().into_any_element(),
             None => self.render_empty_state(window, cx).into_any_element(),
         };
         let drop_layer = match pane {

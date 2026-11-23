@@ -5,15 +5,15 @@ use std::{
 };
 
 use gpui_kit::{
-    App, Global, KeyBinding, KeyBindingContextPredicate, SharedString, Subscription, Task,
+    App, Global, KeyBinding, KeyBindingContextPredicate, SharedString, Subscription, Task, Window,
     component::Icon,
 };
 use notia_core::{EntryKind, VaultPath};
 use notia_theme::ThemeCatalog;
 
 use crate::{
-    Command, NavigationIcon, Panel, Plugin, PluginContext, PluginManifest, RibbonItem, SettingsTab,
-    StatusItem, TabBarItem,
+    Command, FileOpener, NavigationIcon, Panel, Plugin, PluginContext, PluginManifest, RibbonItem,
+    SettingsTab, StatusItem, TabBarItem,
     actions::{RunCommand, WORKSPACE_CONTEXT},
     context::DeactivateHook,
 };
@@ -26,6 +26,7 @@ struct Activation {
     status_items: Vec<StatusItem>,
     tab_bar_items: Vec<TabBarItem>,
     navigation_icons: Vec<NavigationIcon>,
+    file_openers: Vec<FileOpener>,
     settings_tabs: Vec<SettingsTab>,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
@@ -40,6 +41,7 @@ impl Activation {
         self.status_items.extend(other.status_items);
         self.tab_bar_items.extend(other.tab_bar_items);
         self.navigation_icons.extend(other.navigation_icons);
+        self.file_openers.extend(other.file_openers);
         self.settings_tabs.extend(other.settings_tabs);
         self._subscriptions.extend(other._subscriptions);
         self._tasks.extend(other._tasks);
@@ -238,6 +240,7 @@ impl PluginHost {
             status_items,
             tab_bar_items,
             navigation_icons,
+            file_openers,
             settings_tabs,
             themes,
             subscriptions,
@@ -257,6 +260,7 @@ impl PluginHost {
             status_items,
             tab_bar_items,
             navigation_icons,
+            file_openers,
             settings_tabs,
             _subscriptions: subscriptions,
             _tasks: tasks,
@@ -418,6 +422,24 @@ impl PluginHost {
             .collect();
         items.sort_by(|a, b| (a.order(), a.id()).cmp(&(b.order(), b.id())));
         items
+    }
+
+    /// A view an enabled plugin built for this vault file, if any.
+    pub fn open_file_for_path(
+        path: &VaultPath,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<gpui_kit::AnyView> {
+        let mut openers: Vec<FileOpener> = {
+            let host = cx.global::<Self>();
+            host.activations()
+                .flat_map(|(_, activation)| activation.file_openers.iter().cloned())
+                .collect()
+        };
+        openers.sort_by(|a, b| (a.order(), a.id()).cmp(&(b.order(), b.id())));
+        openers
+            .into_iter()
+            .find_map(|opener| opener.try_open(path, window, cx))
     }
 
     /// The icon the enabled plugins chose for an entry of the file

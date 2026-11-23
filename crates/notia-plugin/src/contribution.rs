@@ -407,3 +407,59 @@ impl NavigationIcon {
         self
     }
 }
+
+type FileOpenFn = dyn Fn(&VaultPath, &mut Window, &mut App) -> Option<AnyView>;
+
+/// Opens a vault file in the workspace instead of the system viewer.
+///
+/// Plugins are asked from lowest [`order`](Self::order) to highest; the first
+/// opener that returns a view wins.
+#[derive(Clone)]
+pub struct FileOpener {
+    id: SharedString,
+    order: i32,
+    open: Rc<FileOpenFn>,
+}
+
+impl FileOpener {
+    /// `open` returns a view when this plugin handles the file, or `None` to
+    /// leave it to another plugin or the default handler.
+    pub fn new(
+        id: impl Into<SharedString>,
+        open: impl Fn(&VaultPath, &mut Window, &mut App) -> Option<AnyView> + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            order: 0,
+            open: Rc::new(open),
+        }
+    }
+
+    /// Lower orders are asked first.
+    pub fn with_order(mut self, order: i32) -> Self {
+        self.order = order;
+        self
+    }
+
+    pub fn id(&self) -> &SharedString {
+        &self.id
+    }
+
+    pub fn order(&self) -> i32 {
+        self.order
+    }
+
+    pub(crate) fn try_open(
+        &self,
+        path: &VaultPath,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyView> {
+        (self.open)(path, window, cx)
+    }
+
+    pub(crate) fn qualified(mut self, plugin_id: &str) -> Self {
+        self.id = qualify(&self.id, plugin_id);
+        self
+    }
+}

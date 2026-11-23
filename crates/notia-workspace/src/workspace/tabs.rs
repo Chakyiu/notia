@@ -7,8 +7,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use notia_plugin::{
-    AppSettings, EditorCommand, EditorId, Notia, OpenOptions, PluginHost, ViewMode,
-    core::VaultPath,
+    AppSettings, EditorCommand, EditorId, Notia, OpenOptions, PluginHost, ViewMode, core::VaultPath,
 };
 
 use super::Workspace;
@@ -282,14 +281,7 @@ impl Workspace {
                 let ix = if let Some(ix) = self.find_tab(pane, &path, cx) {
                     ix
                 } else {
-                    self.insert_file(
-                        pane,
-                        path.clone(),
-                        body,
-                        options.is_new_tab(),
-                        window,
-                        cx,
-                    )
+                    self.insert_file(pane, path.clone(), body, options.is_new_tab(), window, cx)
                 };
                 self.finish_open(pane, ix, &path, None, window, cx);
                 return;

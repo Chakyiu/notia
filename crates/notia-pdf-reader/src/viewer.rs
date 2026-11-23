@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use gpui_kit::component::{
-    ActiveTheme as _, scroll::ScrollableElement as _, v_flex,
-};
+use gpui_kit::component::{ActiveTheme as _, scroll::ScrollableElement as _, v_flex};
 use gpui_kit::{img, *};
 use notia_plugin::{Notia, core::VaultPath};
 use pdf_oxide::PdfDocument;
@@ -27,7 +25,7 @@ impl PdfViewer {
         let vault = Notia::vault(cx);
         let abs = vault.read(cx).vault().abs_path(&path);
         let state = LoadState::Loading;
-            let path_label = path.clone();
+        let path_label = path.clone();
         let task = cx.spawn(async move |this, cx| {
             let file = abs.clone();
             let result = smol::unblock(move || load_pages(&file)).await;

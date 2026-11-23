@@ -6,9 +6,7 @@ mod ui;
 mod viewer;
 
 use gpui::{App, AppContext as _};
-use notia_plugin::{
-    FileOpener, Plugin, PluginContext, PluginManifest, core::VaultPath,
-};
+use notia_plugin::{FileOpener, Plugin, PluginContext, PluginManifest, core::VaultPath};
 
 use viewer::PdfViewer;
 
@@ -21,17 +19,14 @@ impl Plugin for PdfReaderPlugin {
     }
 
     fn activate(&self, ctx: &mut PluginContext, _: &mut App) {
-        ctx.add_file_opener(FileOpener::new(
-            "pdf",
-            |path: &VaultPath, _window, cx| {
-                if !path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
-                {
-                    return None;
-                }
-                Some(cx.new(|cx| PdfViewer::new(path.clone(), cx)).into())
-            },
-        ));
+        ctx.add_file_opener(FileOpener::new("pdf", |path: &VaultPath, _window, cx| {
+            if !path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+            {
+                return None;
+            }
+            Some(cx.new(|cx| PdfViewer::new(path.clone(), cx)).into())
+        }));
     }
 }

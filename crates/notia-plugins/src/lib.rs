@@ -27,13 +27,13 @@ pub use date_time::DateTimePlugin;
 pub use file_explorer::FileExplorerPlugin;
 pub use file_icons::FileIconsPlugin;
 pub use history::HistoryPlugin;
+pub use notia_pdf_reader::PdfReaderPlugin;
 pub use outline::OutlinePlugin;
 pub use search::SearchPlugin;
 pub use sync::SyncPlugin;
 pub use tags::TagsPlugin;
 pub use theme_gallery::ThemeGalleryPlugin;
 pub use word_count::WordCountPlugin;
-pub use notia_pdf_reader::PdfReaderPlugin;
 
 /// The default theme, which is always installed.
 const NOTIA_THEME: &str = include_str!("../themes/notia.json");

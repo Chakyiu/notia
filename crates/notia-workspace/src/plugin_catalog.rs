@@ -15,18 +15,17 @@ use std::{
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, ColorName, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _, Toggle, ToggleGroup, ToggleVariants as _},
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
-    scroll::ScrollableElement as _,
     h_flex,
     input::{Input, InputState},
     notification::Notification,
+    scroll::ScrollableElement as _,
     setting::{RenderOptions, SettingGroup, SettingItem, SettingPage},
     skeleton::Skeleton,
     spinner::Spinner,
     tag::Tag,
-    ColorName,
     text::TextView,
     v_flex,
 };
@@ -155,21 +154,30 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
         readme_for: None,
         readme_task: None,
     });
-    let (catalog, error, loading, mut busy, mut install_errors, query_field, filter, selected, readmes) =
-        {
-            let ui = state.read(cx);
-            (
-                ui.catalog.clone(),
-                ui.error.clone(),
-                ui.loading,
-                ui.busy.clone(),
-                ui.install_errors.clone(),
-                ui.query.clone(),
-                ui.filter,
-                ui.selected.clone(),
-                ui.readmes.clone(),
-            )
-        };
+    let (
+        catalog,
+        error,
+        loading,
+        mut busy,
+        mut install_errors,
+        query_field,
+        filter,
+        selected,
+        readmes,
+    ) = {
+        let ui = state.read(cx);
+        (
+            ui.catalog.clone(),
+            ui.error.clone(),
+            ui.loading,
+            ui.busy.clone(),
+            ui.install_errors.clone(),
+            ui.query.clone(),
+            ui.filter,
+            ui.selected.clone(),
+            ui.readmes.clone(),
+        )
+    };
     if let Some(id) = installing_plugin(cx) {
         busy = Some(id);
     }
@@ -252,12 +260,10 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
                 .gap_2()
                 .items_center()
                 .child(
-                    div().flex_1().min_w_0().child(
-                        Input::new(&query_field)
-                            .appearance(true)
-                            .small()
-                            .w_full(),
-                    ),
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Input::new(&query_field).appearance(true).small().w_full()),
                 )
                 .children(filter_group)
                 .child(
@@ -271,19 +277,12 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
                         .on_click(move |_, _, cx| start_load(&state_for_refresh, cx)),
                 ),
         )
-        .child(
-            div()
-                .w_full()
-                .border_b_1()
-                .border_color(border),
-        );
+        .child(div().w_full().border_b_1().border_color(border));
 
     let count_text = counts.as_ref().map(|counts| {
         let mut line = format!(
             "{} plugins · {} installed · {} update",
-            counts.total,
-            counts.installed,
-            counts.updates
+            counts.total, counts.installed, counts.updates
         );
         if counts.updates != 1 {
             line.push('s');
@@ -414,12 +413,7 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
         .when_some(count_text, |this, line| {
             this.child(div().text_xs().text_color(muted).child(line))
         })
-        .child(
-            div()
-                .w_full()
-                .flex_1()
-                .child(container_query(store)),
-        )
+        .child(div().w_full().flex_1().child(container_query(store)))
         .into_any_element()
 }
 
@@ -447,7 +441,11 @@ fn store_counts(catalog: &Catalog, query: &str, plugins_dir: &Path, cx: &App) ->
         installed: 0,
         updates: 0,
     };
-    for entry in catalog.entries.iter().filter(|entry| matches_query(entry, query)) {
+    for entry in catalog
+        .entries
+        .iter()
+        .filter(|entry| matches_query(entry, query))
+    {
         counts.total += 1;
         let control = entry_control(entry, plugins_dir, cx);
         if matches_filter(control, StoreFilter::Installed) {
@@ -515,9 +513,9 @@ fn detail_placeholder(muted: Hsla) -> AnyElement {
             EmptyHeader::new()
                 .media(EmptyMedia::new().child(Icon::new(Lucide::Store)))
                 .title(EmptyTitle::new().child("Choose a plugin"))
-                .description(EmptyDescription::new().child(
-                    "Choose a plugin to read what it does.",
-                )),
+                .description(
+                    EmptyDescription::new().child("Choose a plugin to read what it does."),
+                ),
         )
         .text_color(muted)
         .into_any_element()
@@ -547,10 +545,14 @@ fn render_list_pane(
     if loading && catalog.is_none() && error.is_none() {
         return plugin_list_shell(
             border,
-            v_flex().gap_2().children((0..6).map(|_| Skeleton::new().h(px(44.)))),
+            v_flex()
+                .gap_2()
+                .children((0..6).map(|_| Skeleton::new().h(px(44.)))),
         );
     }
-    if let Some(error) = error && catalog.is_none() {
+    if let Some(error) = error
+        && catalog.is_none()
+    {
         let state = state.clone();
         return plugin_list_shell(
             border,
@@ -621,7 +623,8 @@ fn render_list_pane(
             _ => ("No plugins match.".into(), false),
         };
         let show_all = filter == StoreFilter::Installed;
-        let mut empty = Empty::new().header(EmptyHeader::new().title(EmptyTitle::new().child(title)));
+        let mut empty =
+            Empty::new().header(EmptyHeader::new().title(EmptyTitle::new().child(title)));
         if clear_search {
             let state = state_for_action.clone();
             empty = empty.child(
@@ -705,8 +708,8 @@ fn render_plugin_row(
     } else {
         installed_version.clone()
     };
-    let show_action =
-        matches!(control, RowControl::Install | RowControl::Update) && (selected || control == RowControl::Update);
+    let show_action = matches!(control, RowControl::Install | RowControl::Update)
+        && (selected || control == RowControl::Update);
 
     let mut row = h_flex()
         .id(SharedString::from(format!("plugin-store-row-{}", entry.id)))
@@ -754,12 +757,7 @@ fn render_plugin_row(
                                 .unwrap_or_else(|| div().into_any_element())
                         }),
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(muted)
-                        .child(description),
-                )
+                .child(div().text_xs().text_color(muted).child(description))
                 .child(
                     div()
                         .text_xs()
@@ -815,19 +813,6 @@ fn list_install_button(
             open_detail(&state, entry.clone(), cx);
             start_install(&state, plugins_dir.clone(), entry.clone(), cx);
         })
-}
-
-fn row_control(
-    entry: &CatalogEntry,
-    control: RowControl,
-    this_busy: bool,
-    controls_disabled: bool,
-    size: gpui_kit::component::Size,
-    state: &Entity<CatalogState>,
-    plugins_dir: PathBuf,
-) -> AnyElement {
-    detail_action_row(entry, control, this_busy, controls_disabled, size, state, plugins_dir)
-        .into_any_element()
 }
 
 fn detail_action_row(
@@ -2346,9 +2331,9 @@ mod tests {
     };
 
     use super::{
-        CatalogEntry, FolderKind, RowControl, StoreFilter, archive_url, github_url, install_archive,
-        installed_copies, manifest_url, matches_filter, matches_query, parse_catalog, readme_url,
-        remote_is_newer, row_plan, select_updates, uninstall_plugin,
+        CatalogEntry, FolderKind, RowControl, StoreFilter, archive_url, github_url,
+        install_archive, installed_copies, manifest_url, matches_filter, matches_query,
+        parse_catalog, readme_url, remote_is_newer, row_plan, select_updates, uninstall_plugin,
     };
 
     fn entry(branch: &str) -> CatalogEntry {
@@ -2573,7 +2558,10 @@ mod tests {
     fn filter_matches_install_and_update_rows() {
         assert!(matches_filter(RowControl::Install, StoreFilter::All));
         assert!(!matches_filter(RowControl::Install, StoreFilter::Installed));
-        assert!(matches_filter(RowControl::Installed, StoreFilter::Installed));
+        assert!(matches_filter(
+            RowControl::Installed,
+            StoreFilter::Installed
+        ));
         assert!(matches_filter(RowControl::Update, StoreFilter::Updates));
         assert!(!matches_filter(RowControl::Installed, StoreFilter::Updates));
     }

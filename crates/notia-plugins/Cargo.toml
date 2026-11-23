@@ -11,6 +11,7 @@ chrono.workspace = true
 gpui-kit.workspace = true
 log.workspace = true
 notia-plugin.workspace = true
+notia-pdf-reader = { path = "../notia-pdf-reader" }
 notia-sync = { workspace = true, features = ["client"] }
 serde.workspace = true
 serde_json.workspace = true

@@ -7,12 +7,13 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use notia_plugin::{
-    AppSettings, EditorCommand, EditorId, Notia, OpenOptions, ViewMode, core::VaultPath,
+    AppSettings, EditorCommand, EditorId, Notia, OpenOptions, PluginHost, ViewMode, core::VaultPath,
 };
 
 use super::Workspace;
 use super::layout::{SplitAxis, SplitGroup};
 use super::phone::PhoneScreen;
+use crate::file_tab::{PluginFileTab, TabDocument};
 use crate::note_editor::{NoteEditor, NoteEditorEvent};
 
 /// Which group of tabs a note lives in. `Main` is the original pane. A
@@ -25,7 +26,7 @@ pub(super) enum EditorPane {
 }
 
 pub(super) struct OpenTab {
-    pub(super) editor: Entity<NoteEditor>,
+    pub(super) document: TabDocument,
     _subscription: Subscription,
 }
 
@@ -117,7 +118,7 @@ impl Workspace {
         };
         self.active_of(pane)
             .and_then(|ix| self.pane_tabs(pane).get(ix))
-            .map(|tab| &tab.editor)
+            .and_then(|tab| tab.document.as_note())
     }
 
     pub(super) fn focused_pane(&self) -> EditorPane {
@@ -143,13 +144,13 @@ impl Workspace {
             split
                 .tabs
                 .iter()
-                .any(|tab| tab.editor.read(cx).contains_focus(window, cx))
+                .any(|tab| tab.document.contains_focus(window, cx))
         }) {
             EditorPane::Split
         } else if self
             .tabs
             .iter()
-            .any(|tab| tab.editor.read(cx).contains_focus(window, cx))
+            .any(|tab| tab.document.contains_focus(window, cx))
         {
             EditorPane::Main
         } else {
@@ -206,14 +207,14 @@ impl Workspace {
         self.tabs
             .iter()
             .chain(self.split.iter().flat_map(|split| split.tabs.iter()))
-            .map(|tab| tab.editor.clone())
+            .filter_map(|tab| tab.document.as_note().cloned())
             .collect()
     }
 
     pub(super) fn find_tab(&self, pane: EditorPane, path: &VaultPath, cx: &App) -> Option<usize> {
         self.pane_tabs(pane)
             .iter()
-            .position(|tab| tab.editor.read(cx).path() == path)
+            .position(|tab| &tab.document.path(cx) == path)
     }
 
     pub(super) fn make_tab(
@@ -232,7 +233,19 @@ impl Workspace {
             }
         });
         OpenTab {
-            editor,
+            document: TabDocument::Note(editor),
+            _subscription: subscription,
+        }
+    }
+
+    pub(super) fn make_file_tab(
+        &mut self,
+        file: Entity<PluginFileTab>,
+        cx: &mut Context<Self>,
+    ) -> OpenTab {
+        let subscription = cx.observe(&file, |_, _, _| {});
+        OpenTab {
+            document: TabDocument::File(file),
             _subscription: subscription,
         }
     }
@@ -261,8 +274,20 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if !path.is_note() {
-            let path = self.vault.read(cx).vault().abs_path(&path);
-            cx.open_with_system(&path);
+            if let Some(body) = PluginHost::open_file_for_path(&path, window, cx) {
+                if pane == EditorPane::Split && self.split.is_none() {
+                    self.ensure_split(SplitAxis::Right);
+                }
+                let ix = if let Some(ix) = self.find_tab(pane, &path, cx) {
+                    ix
+                } else {
+                    self.insert_file(pane, path.clone(), body, options.is_new_tab(), window, cx)
+                };
+                self.finish_open(pane, ix, &path, None, window, cx);
+                return;
+            }
+            let abs = self.vault.read(cx).vault().abs_path(&path);
+            cx.open_with_system(&abs);
             return;
         }
         if pane == EditorPane::Split && self.split.is_none() {
@@ -292,11 +317,54 @@ impl Workspace {
             && let Some(active) = self.active_of(pane)
             && self.pane_tabs(pane).get(active).is_some()
         {
-            let previous = self.pane_tabs(pane)[active].editor.clone();
-            previous.update(cx, |editor, cx| {
-                editor.apply_edits(window, cx);
-                editor.save(cx);
-            });
+            let mut previous = self.pane_tabs(pane)[active].document.clone();
+            previous.apply_edits(window, cx);
+            previous.save(cx);
+            match pane {
+                EditorPane::Main => self.tabs[active] = tab,
+                EditorPane::Split => {
+                    if let Some(split) = &mut self.split {
+                        split.tabs[active] = tab;
+                    }
+                }
+            }
+            return active;
+        }
+        let ix = self
+            .active_of(pane)
+            .map_or(self.pane_tabs(pane).len(), |active| active + 1);
+        match pane {
+            EditorPane::Main => self.tabs.insert(ix, tab),
+            EditorPane::Split => {
+                if self.split.is_none() {
+                    self.ensure_split(SplitAxis::Right);
+                }
+                if let Some(split) = &mut self.split {
+                    split.tabs.insert(ix, tab);
+                }
+            }
+        }
+        ix
+    }
+
+    pub(super) fn insert_file(
+        &mut self,
+        pane: EditorPane,
+        path: VaultPath,
+        body: AnyView,
+        new_tab: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let file = cx.new(|cx| PluginFileTab::new(path, body, cx));
+        let tab = self.make_file_tab(file, cx);
+        if !new_tab
+            && let Some(active) = self.active_of(pane)
+            && self.pane_tabs(pane).get(active).is_some()
+        {
+            let mut previous = self.pane_tabs(pane)[active].document.clone();
+            previous.apply_edits(window, cx);
+            previous.save(cx);
             match pane {
                 EditorPane::Main => self.tabs[active] = tab,
                 EditorPane::Split => {
@@ -413,7 +481,7 @@ impl Workspace {
             self.activate(from, ix, window, cx);
             return;
         }
-        let path = self.pane_tabs(from)[from_ix].editor.read(cx).path().clone();
+        let path = self.pane_tabs(from)[from_ix].document.path(cx).clone();
         if let Some(existing) = self.find_tab(to, &path, cx) {
             self.close_in(from, from_ix, window, cx);
             if self.pane_tabs(to).get(existing).is_some() {
@@ -536,8 +604,8 @@ impl Workspace {
         if let Some(line) = line
             && let Some(tab) = self.pane_tabs(pane).get(ix)
         {
-            let editor = tab.editor.clone();
-            editor.update(cx, |editor, cx| editor.reveal_line(line, window, cx));
+            let mut document = tab.document.clone();
+            document.reveal_line(line, window, cx);
         }
         self.recent.retain(|recent| recent != path);
         self.recent.insert(0, path.clone());
@@ -687,12 +755,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(editor) = self.pane_tabs(pane).get(ix).map(|tab| tab.editor.clone()) else {
+        let Some(document) = self.pane_tabs(pane).get(ix).map(|tab| tab.document.clone()) else {
             return;
         };
         self.focus = pane;
         self.set_active(pane, Some(ix));
-        editor.update(cx, |editor, cx| editor.focus(window, cx));
+        document.focus(window, cx);
         self.attach_toolbars(cx);
         self.publish_active_note(cx);
         self.schedule_layout_save(cx);
@@ -726,10 +794,9 @@ impl Workspace {
                 split.tabs.remove(ix)
             }
         };
-        tab.editor.update(cx, |editor, cx| {
-            editor.apply_edits(window, cx);
-            editor.save(cx);
-        });
+        let mut document = tab.document;
+        document.apply_edits(window, cx);
+        document.save(cx);
         let len = self.pane_tabs(pane).len();
         let active = self.active_of(pane);
         let next = match active {
@@ -859,24 +926,32 @@ impl Workspace {
         let Some(path) = self
             .pane_tabs(pane)
             .get(ix)
-            .map(|tab| tab.editor.read(cx).path().clone())
+            .map(|tab| tab.document.path(cx).clone())
         else {
             return;
         };
         if let Some(tab) = self.pane_tabs(pane).get(ix) {
-            let editor = tab.editor.clone();
-            editor.update(cx, |editor, cx| {
-                editor.apply_edits(window, cx);
-                editor.save(cx);
-            });
+            let mut document = tab.document.clone();
+            document.apply_edits(window, cx);
+            document.save(cx);
         }
         self.ensure_split(axis);
         if let Some(existing) = self.find_tab(EditorPane::Split, &path, cx) {
             self.activate(EditorPane::Split, existing, window, cx);
             return;
         }
-        let index = self.insert_note(EditorPane::Split, path, true, window, cx);
-        self.activate(EditorPane::Split, index, window, cx);
+        if path.is_note() {
+            let index = self.insert_note(EditorPane::Split, path, true, window, cx);
+            self.activate(EditorPane::Split, index, window, cx);
+        } else {
+            self.open_in_pane(
+                EditorPane::Split,
+                path,
+                OpenOptions::new().in_new_tab(),
+                window,
+                cx,
+            );
+        }
     }
 
     pub(crate) fn cycle_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -936,7 +1011,7 @@ impl Workspace {
                 .find_map(|pane| {
                     self.pane_tabs(pane)
                         .iter()
-                        .map(|tab| &tab.editor)
+                        .filter_map(|tab| tab.document.as_note())
                         .find(|editor| editor.read(cx).id() == id)
                 }),
             None => self.active_editor(),
@@ -1046,7 +1121,7 @@ pub(super) fn tab_context_menu(
                     let Some(path) = copy.update(cx, |this, cx| {
                         this.pane_tabs(pane)
                             .get(ix)
-                            .map(|tab| tab.editor.read(cx).path().to_string())
+                            .map(|tab| tab.document.path(cx).to_string())
                     }) else {
                         return;
                     };
@@ -1057,7 +1132,7 @@ pub(super) fn tab_context_menu(
             let Some(path) = reveal.update(cx, |this, cx| {
                 this.pane_tabs(pane)
                     .get(ix)
-                    .map(|tab| tab.editor.read(cx).path().clone())
+                    .map(|tab| tab.document.path(cx).clone())
             }) else {
                 return;
             };

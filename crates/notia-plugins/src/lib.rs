@@ -27,6 +27,7 @@ pub use date_time::DateTimePlugin;
 pub use file_explorer::FileExplorerPlugin;
 pub use file_icons::FileIconsPlugin;
 pub use history::HistoryPlugin;
+pub use notia_pdf_reader::PdfReaderPlugin;
 pub use outline::OutlinePlugin;
 pub use search::SearchPlugin;
 pub use sync::SyncPlugin;
@@ -61,6 +62,7 @@ pub fn register(cx: &mut App) {
     PluginHost::register(DateTimePlugin, cx);
     PluginHost::register(ThemeGalleryPlugin, cx);
     PluginHost::register(SyncPlugin, cx);
+    PluginHost::register(PdfReaderPlugin, cx);
 }
 
 #[cfg(test)]

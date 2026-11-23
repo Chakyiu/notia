@@ -245,8 +245,9 @@ impl Workspace {
         if let Some(ix) = active
             && let Some(tab) = self.pane_tabs(pane).get(ix)
         {
-            let editor = tab.editor.clone();
-            editor.update(cx, |editor, cx| editor.set_toolbars(toolbars, cx));
+            if let Some(editor) = tab.document.as_note() {
+                editor.update(cx, |editor, cx| editor.set_toolbars(toolbars, cx));
+            }
         }
     }
 
@@ -265,11 +266,17 @@ impl Workspace {
     }
 
     pub(super) fn publish_active_note(&mut self, cx: &mut Context<Self>) {
-        let note = self.active_editor().map(|editor| {
-            let editor = editor.read(cx);
-            ActiveNote::new(editor.path().clone(), editor.text(cx), editor.mode())
-                .with_cursor_line(editor.cursor_line(cx))
-        });
+        let note = self
+            .active_of(self.focused_pane())
+            .and_then(|ix| self.pane_tabs(self.focused_pane()).get(ix))
+            .map(|tab| {
+                ActiveNote::new(
+                    tab.document.path(cx),
+                    tab.document.text(cx),
+                    tab.document.mode(cx),
+                )
+                .with_cursor_line(tab.document.cursor_line(cx))
+            });
         self.model
             .update(cx, |model, cx| model.set_active_note(note, cx));
     }
@@ -288,7 +295,7 @@ impl Workspace {
                         let Some(ix) = self
                             .pane_tabs(pane)
                             .iter()
-                            .position(|tab| tab.editor.read(cx).path().starts_with(path))
+                            .position(|tab| tab.document.starts_with(path, cx))
                         else {
                             break;
                         };

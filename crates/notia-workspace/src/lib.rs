@@ -7,6 +7,7 @@ extern crate gpui_kit as gpui;
 
 mod attachments;
 mod canvas;
+mod file_tab;
 mod kanban;
 mod note_editor;
 mod palette;

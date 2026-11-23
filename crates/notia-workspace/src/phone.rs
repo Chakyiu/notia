@@ -195,7 +195,7 @@ impl Workspace {
                 .px_2()
                 .pb_1()
                 .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
-                    let title = tab.editor.read(cx).title();
+                    let title = tab.document.title(cx);
                     Button::new(("phone-tab", ix))
                         .label(title)
                         .ghost()

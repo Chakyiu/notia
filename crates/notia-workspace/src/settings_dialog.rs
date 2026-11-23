@@ -47,7 +47,7 @@ pub(crate) fn open_settings(window: &mut Window, cx: &mut App) {
             pages.push(plugin_separator());
             pages.extend(plugins);
         }
-        dialog.title("Settings").w(px(920.)).child(
+        dialog.title("Settings").w(px(1040.)).child(
             div()
                 .h(height)
                 .child(Settings::new("notia-settings").pages(pages)),

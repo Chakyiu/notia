@@ -4548,6 +4548,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "notia-image-reader"
+version = "0.2.12"
+dependencies = [
+ "anyhow",
+ "gpui-kit",
+ "log",
+ "notia-plugin",
+ "smol",
+]
+
+[[package]]
 name = "notia-js"
 version = "0.2.12"
 dependencies = [
@@ -4598,6 +4609,7 @@ dependencies = [
  "chrono",
  "gpui-kit",
  "log",
+ "notia-image-reader",
  "notia-pdf-reader",
  "notia-plugin",
  "notia-sync",

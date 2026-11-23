@@ -15,16 +15,18 @@ use std::{
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
     notification::Notification,
+    scroll::ScrollableElement as _,
     setting::{RenderOptions, SettingGroup, SettingItem, SettingPage},
     text::TextView,
     v_flex,
 };
-use gpui_kit::*;
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use notia_plugin::{Notia, PluginHost, PluginKind};
 use serde::Deserialize;
 use serde_json::Value;
@@ -76,7 +78,7 @@ pub(crate) fn page() -> SettingPage {
         .group(
             SettingGroup::new()
                 .description(
-                    "Community plugins from the notia-manifest list. Installing one copies it into this vault. Turn it on under Plugins.",
+                    "Browse community plugins like Obsidian: search and filter the list, read the README on the right, then install. Turn a plugin on under Plugins.",
                 )
                 .item(
                     SettingItem::render(render_store).keywords([
@@ -103,6 +105,14 @@ enum ReadmeError {
     Failed(String),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum StoreFilter {
+    #[default]
+    All,
+    Installed,
+    Updates,
+}
+
 struct CatalogState {
     catalog: Option<Catalog>,
     error: Option<String>,
@@ -111,12 +121,14 @@ struct CatalogState {
     busy: Option<String>,
     install_errors: BTreeMap<String, String>,
     query: Entity<InputState>,
+    filter: StoreFilter,
     selected: Option<String>,
     readmes: BTreeMap<String, ReadmeBody>,
     /// The plugin whose README is being fetched. Dropping `readme_task`
     /// cancels that fetch.
     readme_for: Option<String>,
     readme_task: Option<Task<()>>,
+    auto_selected: bool,
 }
 
 fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -131,13 +143,26 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
         task: None,
         busy: None,
         install_errors: BTreeMap::new(),
-        query: cx.new(|cx| InputState::new(window, cx).placeholder("Search plugins")),
+        query: cx.new(|cx| InputState::new(window, cx).placeholder("Search community plugins…")),
+        filter: StoreFilter::All,
         selected: None,
         readmes: BTreeMap::new(),
         readme_for: None,
         readme_task: None,
+        auto_selected: false,
     });
-    let (catalog, error, loading, mut busy, mut install_errors, query_field, selected, readmes) = {
+    let (
+        catalog,
+        error,
+        loading,
+        mut busy,
+        mut install_errors,
+        query_field,
+        filter,
+        selected,
+        readmes,
+        auto_selected,
+    ) = {
         let ui = state.read(cx);
         (
             ui.catalog.clone(),
@@ -146,8 +171,10 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
             ui.busy.clone(),
             ui.install_errors.clone(),
             ui.query.clone(),
+            ui.filter,
             ui.selected.clone(),
             ui.readmes.clone(),
+            ui.auto_selected,
         )
     };
     if let Some(id) = installing_plugin(cx) {
@@ -168,8 +195,14 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
     let loader_on = PluginHost::global(cx)
         .command("community-plugins:reload")
         .is_some();
-    let muted = cx.theme().muted_foreground;
-    let danger = cx.theme().danger;
+    let theme = cx.theme();
+    let (muted, danger, border, active_bg, radius) = (
+        theme.muted_foreground,
+        theme.danger,
+        theme.border,
+        theme.list_active,
+        theme.radius,
+    );
     let size = options.size();
     let controls_disabled = loading || busy.is_some();
     let refresh_label = if loading {
@@ -210,59 +243,22 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
     let Some(catalog) = catalog else {
         return list.into_any_element();
     };
-    if let Some(id) = selected.as_deref()
-        && let Some(entry) = catalog.entries.iter().find(|entry| entry.id == id)
-    {
-        let known = known_plugin(&entry.id, cx);
-        let folder = folder_kind(&plugins_dir, &entry.id);
-        let installed_version = installed_version(&plugins_dir, &entry.id, known.as_ref());
-        let control_kind = row_plan(
-            folder,
-            known.is_some(),
-            &installed_version,
-            entry.version.as_deref(),
-        );
-        return render_detail(
-            entry,
-            readmes.get(&entry.id),
-            control_kind,
-            busy.as_deref() == Some(entry.id.as_str()),
-            controls_disabled,
-            size,
-            &state,
-            plugins_dir,
-            cx.theme().border,
-            muted,
-            danger,
-            install_errors.get(&entry.id).map(String::as_str),
-        )
-        .into_any_element();
-    }
-    if catalog.skipped > 0 {
-        list = list.child(
-            div()
-                .text_sm()
-                .text_color(muted)
-                .child(skipped_line(catalog.skipped)),
-        );
-    }
-    if catalog.entries.is_empty() {
-        return list
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(muted)
-                    .child("No plugins are listed."),
-            )
-            .into_any_element();
+
+    if !auto_selected && selected.is_none() {
+        if let Some(entry) = catalog.entries.first().cloned() {
+            state.update(cx, |this, cx| {
+                this.auto_selected = true;
+                cx.notify();
+            });
+            open_detail(&state, entry, cx);
+        }
     }
 
-    let mut shown = 0;
-    for entry in catalog
-        .entries
-        .iter()
-        .filter(|entry| matches_query(entry, &query))
-    {
+    let filter_bar = render_filter_bar(filter, size, state.clone());
+
+    let mut browser_rows = Vec::new();
+    let mut shown = 0usize;
+    for entry in catalog.entries.iter() {
         let known = known_plugin(&entry.id, cx);
         let folder = folder_kind(&plugins_dir, &entry.id);
         let installed_version = installed_version(&plugins_dir, &entry.id, known.as_ref());
@@ -272,6 +268,9 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
             &installed_version,
             entry.version.as_deref(),
         );
+        if !matches_query(entry, &query) || !matches_filter(control_kind, filter) {
+            continue;
+        }
         shown += 1;
         let description = known
             .as_ref()
@@ -290,65 +289,57 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
         } else {
             installed_version.clone()
         };
-        let hint = if folder == FolderKind::Linked {
-            Some("Linked from another folder.")
-        } else if matches!(control_kind, RowControl::Installed) && !loader_on {
-            Some("Turn on Community plugins to load it.")
-        } else {
-            None
-        };
-        let error = install_errors.get(&entry.id).cloned();
+        let is_selected = selected.as_deref() == Some(entry.id.as_str());
         let this_busy = busy.as_deref() == Some(entry.id.as_str());
+        let row_error = install_errors.get(&entry.id).cloned();
 
-        let mut body = v_flex()
-            .w_full()
-            .gap_1()
-            .child(div().text_sm().child(entry.name.clone()));
+        let mut summary = v_flex()
+            .gap_0p5()
+            .child(div().text_sm().truncate().child(entry.name.clone()));
         if !description.is_empty() {
-            body = body.child(div().text_sm().text_color(muted).child(description));
+            summary = summary.child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .truncate()
+                    .child(description),
+            );
         }
         let meta = meta_line(&author, &version);
         if !meta.is_empty() {
-            body = body.child(div().text_xs().text_color(muted).child(meta));
+            summary = summary.child(div().text_xs().text_color(muted).child(meta));
         }
-        if matches!(control_kind, RowControl::Update)
-            && let Some(remote) = entry.version.clone()
-        {
-            body = body.child(
-                div()
-                    .text_sm()
-                    .text_color(muted)
-                    .child(format!("Version {remote} is available.")),
-            );
+        if let Some(status) = row_status_label(control_kind) {
+            summary = summary.child(div().text_xs().text_color(muted).child(status));
         }
-        if let Some(hint) = hint {
-            body = body.child(div().text_sm().text_color(muted).child(hint));
+        if let Some(error) = row_error.as_ref() {
+            let line = error.lines().next().unwrap_or("").to_string();
+            summary = summary.child(div().text_xs().text_color(danger).child(line));
         }
-        if let Some(error) = error {
-            let summary = error.lines().next().unwrap_or("").to_string();
-            body = body.child(div().text_sm().text_color(danger).child(summary));
-        }
-        let text = div()
-            .id(SharedString::from(format!(
-                "plugin-store-open-{}",
-                entry.id
-            )))
-            .flex_1()
-            .min_w_0()
-            .cursor_pointer()
-            .on_click({
-                let state = state.clone();
-                let entry = entry.clone();
-                move |_, _, cx| open_detail(&state, entry.clone(), cx)
-            })
-            .child(body);
 
+        let open_state = state.clone();
+        let open_entry = entry.clone();
         let row = h_flex()
+            .id(SharedString::from(format!("plugin-store-row-{}", entry.id)))
             .w_full()
-            .items_center()
-            .justify_between()
-            .gap_3()
-            .child(text)
+            .items_start()
+            .gap_2()
+            .px_2()
+            .py_1p5()
+            .rounded(radius)
+            .when(is_selected, |row| row.bg(active_bg))
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "plugin-store-open-{}",
+                        entry.id
+                    )))
+                    .flex_1()
+                    .min_w_0()
+                    .cursor_pointer()
+                    .on_click(move |_, _, cx| open_detail(&open_state, open_entry.clone(), cx))
+                    .child(summary),
+            )
             .child(row_control(
                 entry,
                 control_kind,
@@ -358,17 +349,173 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
                 &state,
                 plugins_dir.clone(),
             ));
-        list = list.child(row);
+        browser_rows.push(row);
     }
+
+    let empty_message = if !query.trim().is_empty() {
+        "No plugins match your search."
+    } else if filter == StoreFilter::Installed {
+        "No community plugins are installed yet."
+    } else if filter == StoreFilter::Updates {
+        "All installed plugins are up to date."
+    } else {
+        "No plugins are listed."
+    };
+
+    let mut scroll_list = v_flex().gap_0p5().w_full();
     if shown == 0 {
-        let message = if query.trim().is_empty() {
-            "No plugins are listed."
-        } else {
-            "No plugins match."
-        };
-        list = list.child(div().text_sm().text_color(muted).child(message));
+        scroll_list = scroll_list.child(
+            div()
+                .px_2()
+                .py_4()
+                .text_sm()
+                .text_color(muted)
+                .child(empty_message),
+        );
+    } else {
+        scroll_list = scroll_list.children(browser_rows);
     }
-    list.into_any_element()
+
+    let list_column = v_flex()
+        .w(px(300.))
+        .flex_shrink_0()
+        .gap_2()
+        .child(filter_bar)
+        .when(catalog.skipped > 0, |column| {
+            column.child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(skipped_line(catalog.skipped)),
+            )
+        })
+        .child(
+            div()
+                .w_full()
+                .min_h(px(280.))
+                .max_h(px(420.))
+                .overflow_y_scrollbar()
+                .child(scroll_list),
+        );
+
+    let detail_column = v_flex()
+        .flex_1()
+        .min_w_0()
+        .min_h(px(280.))
+        .pl_4()
+        .border_l_1()
+        .border_color(border)
+        .child({
+            if let Some(id) = selected.as_deref()
+                && let Some(entry) = catalog.entries.iter().find(|entry| entry.id == id)
+            {
+                let known = known_plugin(&entry.id, cx);
+                let folder = folder_kind(&plugins_dir, &entry.id);
+                let installed_version = installed_version(&plugins_dir, &entry.id, known.as_ref());
+                let control_kind = row_plan(
+                    folder,
+                    known.is_some(),
+                    &installed_version,
+                    entry.version.as_deref(),
+                );
+                let hint = if folder == FolderKind::Linked {
+                    Some("Linked from another folder.")
+                } else if matches!(control_kind, RowControl::Installed) && !loader_on {
+                    Some("Turn on Community plugins under Plugins to load it.")
+                } else {
+                    None
+                };
+                render_detail(
+                    entry,
+                    readmes.get(&entry.id),
+                    control_kind,
+                    busy.as_deref() == Some(entry.id.as_str()),
+                    controls_disabled,
+                    size,
+                    &state,
+                    plugins_dir.clone(),
+                    border,
+                    muted,
+                    danger,
+                    install_errors.get(&entry.id).map(String::as_str),
+                    hint,
+                    false,
+                )
+                .into_any_element()
+            } else {
+                div()
+                    .flex_1()
+                    .px_2()
+                    .py_6()
+                    .text_sm()
+                    .text_color(muted)
+                    .child("Select a community plugin to see its details and README.")
+                    .into_any_element()
+            }
+        });
+
+    list.child(
+        h_flex()
+            .w_full()
+            .gap_3()
+            .items_start()
+            .child(list_column)
+            .child(detail_column),
+    )
+    .into_any_element()
+}
+
+fn render_filter_bar(
+    current: StoreFilter,
+    size: gpui_kit::component::Size,
+    state: Entity<CatalogState>,
+) -> impl IntoElement {
+    let chip = |id: &'static str, label: &'static str, filter: StoreFilter| {
+        let state = state.clone();
+        Button::new(id)
+            .label(label)
+            .ghost()
+            .small()
+            .with_size(size)
+            .selected(current == filter)
+            .on_click(move |_, _, cx| {
+                state.update(cx, |this, cx| {
+                    this.filter = filter;
+                    cx.notify();
+                });
+            })
+    };
+    h_flex()
+        .w_full()
+        .gap_1()
+        .child(chip("plugin-filter-all", "All", StoreFilter::All))
+        .child(chip(
+            "plugin-filter-installed",
+            "Installed",
+            StoreFilter::Installed,
+        ))
+        .child(chip(
+            "plugin-filter-updates",
+            "Updates",
+            StoreFilter::Updates,
+        ))
+}
+
+fn row_status_label(control: RowControl) -> Option<&'static str> {
+    match control {
+        RowControl::Install => None,
+        RowControl::Installed => Some("Installed"),
+        RowControl::Linked => Some("Linked"),
+        RowControl::Update => Some("Update available"),
+    }
+}
+
+fn matches_filter(control: RowControl, filter: StoreFilter) -> bool {
+    match filter {
+        StoreFilter::All => true,
+        StoreFilter::Installed => matches!(control, RowControl::Installed | RowControl::Linked),
+        StoreFilter::Updates => control == RowControl::Update,
+    }
 }
 
 fn row_control(
@@ -521,6 +668,8 @@ fn render_detail(
     muted: Hsla,
     danger: Hsla,
     error: Option<&str>,
+    hint: Option<&str>,
+    show_back: bool,
 ) -> impl IntoElement {
     let meta = meta_line(&entry.author, entry.version.as_deref().unwrap_or(""));
     let github = github_url(entry);
@@ -531,7 +680,7 @@ fn render_detail(
         .pb_3()
         .border_b_1()
         .border_color(border)
-        .child(div().text_sm().child(entry.name.clone()));
+        .child(div().text_base().child(entry.name.clone()));
     if !entry.description.is_empty() {
         overview = overview.child(
             div()
@@ -543,57 +692,70 @@ fn render_detail(
     if !meta.is_empty() {
         overview = overview.child(div().text_xs().text_color(muted).child(meta));
     }
+    if let Some(hint) = hint {
+        overview = overview.child(div().text_sm().text_color(muted).child(hint.to_string()));
+    }
     if let Some(error) = error {
         let summary = error.lines().next().unwrap_or("").to_string();
         overview = overview.child(div().text_sm().text_color(danger).child(summary));
     }
-    v_flex()
+
+    let toolbar = h_flex()
         .w_full()
-        .gap_3()
+        .items_center()
+        .justify_between()
+        .child(div().when(show_back, |column| {
+            column.child(
+                Button::new("plugin-store-back")
+                    .ghost()
+                    .icon(Lucide::ArrowLeft)
+                    .tooltip("Back")
+                    .accessibility_label("Back")
+                    .with_size(size)
+                    .on_click(move |_, _, cx| {
+                        back_state.update(cx, |this, cx| {
+                            this.selected = None;
+                            cx.notify();
+                        });
+                    }),
+            )
+        }))
         .child(
             h_flex()
-                .w_full()
-                .items_center()
-                .justify_between()
+                .gap_1()
                 .child(
-                    Button::new("plugin-store-back")
-                        .ghost()
-                        .icon(Lucide::ArrowLeft)
-                        .tooltip("Back")
-                        .accessibility_label("Back")
+                    Button::new(SharedString::from(format!("github-{}", entry.id)))
+                        .outline()
+                        .icon(Lucide::Github)
+                        .tooltip("GitHub")
+                        .accessibility_label(format!("Open {} on GitHub", entry.name))
                         .with_size(size)
-                        .on_click(move |_, _, cx| {
-                            back_state.update(cx, |this, cx| {
-                                this.selected = None;
-                                cx.notify();
-                            });
-                        }),
+                        .on_click(move |_, _, cx| cx.open_url(&github)),
                 )
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .child(
-                            Button::new(SharedString::from(format!("github-{}", entry.id)))
-                                .outline()
-                                .icon(Lucide::Github)
-                                .tooltip("GitHub")
-                                .accessibility_label(format!("Open {} on GitHub", entry.name))
-                                .with_size(size)
-                                .on_click(move |_, _, cx| cx.open_url(&github)),
-                        )
-                        .child(row_control(
-                            entry,
-                            control,
-                            this_busy,
-                            controls_disabled,
-                            size,
-                            state,
-                            plugins_dir,
-                        )),
-                ),
-        )
+                .child(row_control(
+                    entry,
+                    control,
+                    this_busy,
+                    controls_disabled,
+                    size,
+                    state,
+                    plugins_dir,
+                )),
+        );
+
+    v_flex()
+        .w_full()
+        .h_full()
+        .gap_3()
+        .child(toolbar)
         .child(overview)
-        .child(readme_view(&entry.id, readme, muted, danger))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scrollbar()
+                .child(readme_view(&entry.id, readme, muted, danger)),
+        )
 }
 
 fn readme_view(id: &str, readme: Option<&ReadmeBody>, muted: Hsla, danger: Hsla) -> AnyElement {
@@ -1864,9 +2026,9 @@ mod tests {
     };
 
     use super::{
-        CatalogEntry, FolderKind, RowControl, archive_url, github_url, install_archive,
-        installed_copies, manifest_url, matches_query, parse_catalog, readme_url, remote_is_newer,
-        row_plan, select_updates, uninstall_plugin,
+        CatalogEntry, FolderKind, RowControl, StoreFilter, archive_url, github_url,
+        install_archive, installed_copies, manifest_url, matches_filter, matches_query,
+        parse_catalog, readme_url, remote_is_newer, row_plan, select_updates, uninstall_plugin,
     };
 
     fn entry(branch: &str) -> CatalogEntry {
@@ -1948,6 +2110,19 @@ mod tests {
     #[test]
     fn rejects_a_list_that_is_not_json() {
         assert!(parse_catalog("not json").is_err());
+    }
+
+    #[test]
+    fn store_filters_match_obsidian_style_views() {
+        assert!(matches_filter(RowControl::Install, StoreFilter::All));
+        assert!(!matches_filter(RowControl::Install, StoreFilter::Installed));
+        assert!(matches_filter(
+            RowControl::Installed,
+            StoreFilter::Installed
+        ));
+        assert!(matches_filter(RowControl::Linked, StoreFilter::Installed));
+        assert!(matches_filter(RowControl::Update, StoreFilter::Updates));
+        assert!(!matches_filter(RowControl::Installed, StoreFilter::Updates));
     }
 
     #[test]

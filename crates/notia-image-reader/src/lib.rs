@@ -20,10 +20,7 @@ impl Plugin for ImageReaderPlugin {
 
     fn activate(&self, ctx: &mut PluginContext, _: &mut App) {
         ctx.add_file_opener(FileOpener::new("image", |path: &VaultPath, _window, cx| {
-            if !path
-                .extension()
-                .is_some_and(viewer::is_image_extension)
-            {
+            if !path.extension().is_some_and(viewer::is_image_extension) {
                 return None;
             }
             Some(cx.new(|cx| ImageViewer::new(path.clone(), cx)).into())

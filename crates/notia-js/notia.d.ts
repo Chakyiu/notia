@@ -231,9 +231,33 @@ declare module "notia" {
 
   /** The building blocks of panels. */
   export const ui: {
-    column(children: Child[], options?: object): Element;
-    /** `wrap: false` keeps children on one line. `spread` puts the first and last at opposite ends. */
-    row(children: Child[], options?: { wrap?: boolean; spread?: boolean }): Element;
+    /**
+     * `gap` is the space between children, in px (0–256). Leave it out to keep
+     * the usual 8px. `minHeight` (0–1024) holds the column at that height.
+     */
+    column(children: Child[], options?: { gap?: number; minHeight?: number }): Element;
+    /**
+     * `wrap: false` keeps children on one line. `spread` puts the first and
+     * last at opposite ends. `gap` is px (0–256); leave it out to keep 8px.
+     * `columns` (1–31) lays the children out in that many equal tracks, so
+     * cell *n* lines up with cell *n* of another row of the same width. Omit
+     * `columns` and the row stays a flex row — a host from before this field
+     * ignores it and does the same. `rowHeight` (px, 0–1024) sets every
+     * cell's height when `columns` is set. `align: "start"` left-aligns; the
+     * default centers each cell. Pass `spread: true` as well when an older
+     * host should keep today's full-width row.
+     */
+    row(
+      children: Child[],
+      options?: {
+        wrap?: boolean;
+        spread?: boolean;
+        gap?: number;
+        columns?: number;
+        rowHeight?: number;
+        align?: "center" | "start";
+      },
+    ): Element;
     /** A bordered field. A chat puts the question and its controls in one. */
     composer(children: Child[]): Element;
     /** A small section heading, like those of the core panels. */
@@ -253,6 +277,17 @@ declare module "notia" {
         variant?: "outline" | "primary" | "ghost";
         /** Shown on hover. An empty label with an icon is an icon button. */
         tooltip?: string;
+        /** Paints the label with the theme's muted foreground. The button stays clickable. */
+        muted?: boolean;
+        /**
+         * Draws a 4px dot 3px under the label, inside the button, and makes
+         * the button 36px tall. `true` or `"accent"` uses the accent color.
+         * `"primaryForeground"` uses the primary button's ink, so the dot
+         * stays visible on a filled primary button.
+         */
+        dot?: boolean | "accent" | "primaryForeground";
+        /** Used when `dot` is `true`. `"accent"` is the default. */
+        dotTone?: "accent" | "primaryForeground";
       },
     ): Element;
     /** `compact` draws shorter rows, for a log of tool calls. */

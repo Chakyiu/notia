@@ -250,13 +250,13 @@ Every callback (button `onClick`, `onChange`, …) must be a function.
 
 | Builder | Element |
 | ------- | ------- |
-| `column(children, options?)`, `row(children, options?)` | Layout rows/columns. `row` options: `{ wrap?: boolean, spread?: boolean }` — `wrap: false` keeps one line; `spread` pushes the first and last child apart. |
+| `column(children, options?)`, `row(children, options?)` | Layout rows/columns. `gap` is px (0–256); omit it to keep the 8px gap. `column` also takes `minHeight` (px, 0–1024). `row` options: `{ wrap?: boolean, spread?: boolean, gap?: number, columns?: number, rowHeight?: number, align?: "center" \| "start" }`. `wrap: false` keeps one line; `spread` pushes the first and last child apart. `columns` (1–31) places the children in that many equal tracks (`repeat(n, minmax(0, 1fr))`), so cell *n* lines up with cell *n* of another row of the same width that uses the same `gap`. Omit `columns` and the row stays a flex row. `rowHeight` (px, 0–1024) sets every cell's height when `columns` is set. `align: "start"` left-aligns; the default centers each cell. A host that does not know these fields ignores them. Pass `spread: true` with `columns` when that older host should keep a full-width row. |
 | `composer(children)` | A bordered field (a prompt and its controls). |
 | `heading(text)` | A small section heading. In a settings tab it starts a new section. |
 | `text(text, options?)` | Options `{ muted?, bold?, small?, danger? }`. A bare string child is rendered as text. |
 | `icon(name, options?)` | A Lucide icon without a button; `{ muted? }`. |
 | `markdown(source)` | Renders Markdown. |
-| `button(label, onClick, options?)` | Options `{ icon?, variant?: "outline" \| "primary" \| "ghost", tooltip? }`; a tooltip with an empty label makes an icon button. |
+| `button(label, onClick, options?)` | Options `{ icon?, variant?: "outline" \| "primary" \| "ghost", tooltip?, muted?, dot?, dotTone? }`. A tooltip with an empty label makes an icon button. `muted` paints the label with `muted.foreground` and leaves the button clickable. `dot: true` (or `"accent"`) draws a 4px accent dot 3px under the label, inside the button, and makes the button 36px tall. `dot: "primaryForeground"` (or `dotTone: "primaryForeground"`) uses the primary button's own ink so the dot stays visible on a filled primary button. |
 | `list(items, options?)` | Items are `{ title, subtitle?, icon?, onClick? }` or strings; `{ compact? }` draws tighter rows. |
 | `chip(label, onClose?)` | A short label; setting `onClose` draws an × that removes it. |
 | `separator()`, `empty(text)` | A rule line; a centered muted message. |

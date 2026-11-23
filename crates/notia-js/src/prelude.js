@@ -102,9 +102,49 @@
     return value;
   };
 
+  // A length in px, or `undefined` when the caller left it out. Out of range clamps.
+  const px = (value, max) => {
+    if (value == null || value === "") return undefined;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return undefined;
+    return Math.min(max, Math.max(0, n));
+  };
+  const count = (value, min, max, fallback) => {
+    const n = Math.trunc(Number(value));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+  };
+  // `undefined` drops the key from the JSON, which is how "leave the default" is spelled.
+  const lengthOption = (node, key, value, max) => {
+    const n = px(value, max);
+    if (n === undefined) delete node[key];
+    else node[key] = n;
+  };
+
   const ui = Object.freeze({
-    column: (children = [], options = {}) => ({ ...options, type: "column", children }),
-    row: (children = [], options = {}) => ({ ...options, type: "row", children }),
+    column: (children = [], options = {}) => {
+      const node = { ...options, type: "column", children };
+      lengthOption(node, "gap", options.gap, 256);
+      lengthOption(node, "minHeight", options.minHeight, 1024);
+      return node;
+    },
+    /**
+     * `columns` (1–31) gives every child an equal track, so cell n lines up
+     * with cell n of another row of the same width. Leave it out and this
+     * stays a flex row. `rowHeight` is every cell's height, in px, and
+     * applies with `columns`. `align: "start"` left-aligns; the default
+     * centers. `spread` is what a host that ignores `columns` still honors.
+     */
+    row: (children = [], options = {}) => {
+      const node = { ...options, type: "row", children };
+      lengthOption(node, "gap", options.gap, 256);
+      lengthOption(node, "rowHeight", options.rowHeight, 1024);
+      if (options.columns == null || options.columns === "") delete node.columns;
+      else node.columns = count(options.columns, 1, 31, 1);
+      if (options.align === "start") node.align = "start";
+      else delete node.align;
+      return node;
+    },
     /** A bordered field. A chat puts the question and its controls in one. */
     composer: (children = []) => ({ type: "composer", children }),
     heading: (text) => ({ type: "heading", text: String(text) }),
@@ -116,12 +156,29 @@
       muted: options.muted === true,
     }),
     markdown: (source) => ({ type: "markdown", source: String(source) }),
-    button: (label, onClick, options = {}) => ({
-      ...options,
-      type: "button",
-      label: String(label),
-      onClick: expectFunction(onClick, "a button's onClick"),
-    }),
+    button: (label, onClick, options = {}) => {
+      const requested = options.dot;
+      const dotted = requested === true || (typeof requested === "string" && requested !== "");
+      const tone = typeof requested === "string" ? requested : options.dotTone;
+      const node = {
+        ...options,
+        type: "button",
+        label: String(label),
+        onClick: expectFunction(onClick, "a button's onClick"),
+      };
+      if (options.muted === true) node.muted = true;
+      else delete node.muted;
+      if (dotted) {
+        node.dot = true;
+        // `accent` is the default, so it does not need to be sent.
+        if (tone === "primaryForeground") node.dotTone = tone;
+        else delete node.dotTone;
+      } else {
+        delete node.dot;
+        delete node.dotTone;
+      }
+      return node;
+    },
     list: (items = [], options = {}) => ({
       type: "list",
       items,

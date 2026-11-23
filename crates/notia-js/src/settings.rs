@@ -386,7 +386,7 @@ fn area_key(id: &str, ix: usize) -> String {
 /// What `render` returned, without the column the prelude puts an array in.
 fn top_level(node: Node) -> Vec<Node> {
     match node {
-        Node::Column { children } => children,
+        Node::Column { children, .. } => children,
         node => vec![node],
     }
 }

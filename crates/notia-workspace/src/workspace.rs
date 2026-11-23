@@ -11,7 +11,6 @@ use notia_plugin::{
     theme::{ColorScheme, ThemeCatalog},
 };
 
-use crate::note_editor::NoteEditor;
 
 #[path = "phone.rs"]
 mod phone;
@@ -144,9 +143,9 @@ impl Workspace {
             .filter(|path| workspace.vault.read(cx).vault().exists(path))
             .collect();
         for path in existing {
-            let editor = cx.new(|cx| NoteEditor::new(path, window, cx));
-            let tab = workspace.make_tab(editor, window, cx);
-            workspace.tabs.push(tab);
+            if let Some(tab) = workspace.tab_for_saved_path(path, window, cx) {
+                workspace.tabs.push(tab);
+            }
         }
         workspace.restore_split(layout.split, window, cx);
         match layout.active_tab.filter(|ix| *ix < workspace.tabs.len()) {

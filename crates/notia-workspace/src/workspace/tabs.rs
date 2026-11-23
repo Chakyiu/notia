@@ -250,6 +250,25 @@ impl Workspace {
         }
     }
 
+    /// Rebuilds one tab from a saved path. Plugin file openers run before the
+    /// note editor so a PDF is not read as UTF-8 text.
+    pub(super) fn tab_for_saved_path(
+        &mut self,
+        path: VaultPath,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<OpenTab> {
+        if let Some(body) = PluginHost::open_file_for_path(&path, window, cx) {
+            let file = cx.new(|cx| PluginFileTab::new(path, body, cx));
+            return Some(self.make_file_tab(file, cx));
+        }
+        if path.is_note() {
+            let editor = cx.new(|cx| NoteEditor::new(path, window, cx));
+            return Some(self.make_tab(editor, window, cx));
+        }
+        None
+    }
+
     /// Opens a note in the pane that last had focus. A note already open
     /// there is shown again. Otherwise it is opened in that pane even when
     /// the other pane already has it. Without `in_new_tab`, it replaces that
@@ -273,19 +292,38 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !path.is_note() {
-            if let Some(body) = PluginHost::open_file_for_path(&path, window, cx) {
-                if pane == EditorPane::Split && self.split.is_none() {
-                    self.ensure_split(SplitAxis::Right);
-                }
-                let ix = if let Some(ix) = self.find_tab(pane, &path, cx) {
-                    ix
-                } else {
-                    self.insert_file(pane, path.clone(), body, options.is_new_tab(), window, cx)
-                };
-                self.finish_open(pane, ix, &path, None, window, cx);
-                return;
+        if let Some(body) = PluginHost::open_file_for_path(&path, window, cx) {
+            if pane == EditorPane::Split && self.split.is_none() {
+                self.ensure_split(SplitAxis::Right);
             }
+            let ix = match self.find_tab(pane, &path, cx) {
+                Some(ix) if matches!(self.pane_tabs(pane)[ix].document, TabDocument::File(_)) => {
+                    ix
+                }
+                Some(ix) => {
+                    self.take_tab(pane, ix);
+                    self.insert_file(
+                        pane,
+                        path.clone(),
+                        body,
+                        options.is_new_tab(),
+                        window,
+                        cx,
+                    )
+                }
+                None => self.insert_file(
+                    pane,
+                    path.clone(),
+                    body,
+                    options.is_new_tab(),
+                    window,
+                    cx,
+                ),
+            };
+            self.finish_open(pane, ix, &path, None, window, cx);
+            return;
+        }
+        if !path.is_note() {
             let abs = self.vault.read(cx).vault().abs_path(&path);
             cx.open_with_system(&abs);
             return;

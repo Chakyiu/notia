@@ -10,7 +10,6 @@ use super::Workspace;
 use super::nav;
 use super::phone::PhoneScreen;
 use super::tabs::OpenTab;
-use crate::note_editor::NoteEditor;
 
 const SIDEBAR_WIDTHS: (Pixels, Pixels) = (px(180.), px(560.));
 
@@ -176,8 +175,9 @@ impl Workspace {
             if !self.vault.read(cx).vault().exists(&path) {
                 continue;
             }
-            let editor = cx.new(|cx| NoteEditor::new(path, window, cx));
-            tabs.push(self.make_tab(editor, window, cx));
+            if let Some(tab) = self.tab_for_saved_path(path, window, cx) {
+                tabs.push(tab);
+            }
         }
         if tabs.is_empty() {
             return;

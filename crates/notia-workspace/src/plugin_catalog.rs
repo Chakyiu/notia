@@ -417,7 +417,13 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
         .when_some(count_text, |this, line| {
             this.child(div().text_xs().text_color(muted).child(line))
         })
-        .child(div().w_full().flex_1().min_h_0().child(container_query(store)))
+        .child(
+            div()
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .child(container_query(store)),
+        )
         .into_any_element()
 }
 

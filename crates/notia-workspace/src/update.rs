@@ -28,15 +28,8 @@ pub(crate) fn on_launch(cx: &mut App) {
     if gpui_kit::is_mobile() {
         return;
     }
-    controller(cx).update(cx, |this, cx| {
-        if this.launch_checked {
-            return;
-        }
-        this.launch_checked = true;
-        if auto_update_enabled() {
-            this.start(true, cx);
-        }
-    });
+    // Register the controller so manual checks work; do not hit GitHub on cold start.
+    let _ = controller(cx);
 }
 
 pub(crate) fn items() -> Vec<SettingItem> {
@@ -165,8 +158,6 @@ fn controller(cx: &mut App) -> Entity<UpdateController> {
 struct UpdateController {
     phase: UpdatePhase,
     task: Option<Task<()>>,
-    /// The launch check runs once, even when another window opens later.
-    launch_checked: bool,
 }
 
 impl UpdateController {
@@ -174,7 +165,6 @@ impl UpdateController {
         Self {
             phase: UpdatePhase::Idle,
             task: None,
-            launch_checked: false,
         }
     }
 

@@ -45,11 +45,11 @@ scripts/package.sh all          # every image this machine can produce
 
 A macOS, Windows, or Linux build links that system's libraries, so each image is produced on that system. From macOS or Windows, the Linux image is built in Docker when Docker is running. The Windows image is built by running `scripts/package.sh windows` on Windows. The macOS app requires macOS 12 or newer.
 
-Pushing a version tag builds all three and publishes them as a GitHub release. The tag has to match `version` in `Cargo.toml`, so version `0.1.0` is tag `v0.1.0`.
+Pushing a version tag builds all three and publishes them as a GitHub release. The tag has to match `version` in `Cargo.toml`, so version `0.2.13` is tag `v0.2.13`.
 
 ```
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.13
+git push origin v0.2.13
 ```
 
 The release contains:
@@ -93,7 +93,7 @@ That writes `libnotia_android.so` where Gradle expects it. Open `android/` in An
 
 Notes are `.md` files. `[[Getting around]]` links to a note, and `[[Themes and plugins|how themes work]]` shows different text. Following a link to a note that does not exist creates it. `#tags` are indexed. The editor also handles tasks, `==highlights==`, fenced code, and callouts such as `> [!tip]`.
 
-Pasted images are stored in `attachments/`. Deleted files move to `.trash` in the vault. Vault settings, installed themes, and community plugins live in `.notia/`.
+Pasted images are stored in `attachments/`. PDFs and images in the vault open in their own tabs. Deleted files move to `.trash` in the vault. Vault settings, installed themes, and community plugins live in `.notia/`.
 
 The button above a note cycles edit and preview. `⌘E` does the same. Split, which shows the Markdown and the preview side by side, is turned on in Settings → Editor.
 
@@ -149,8 +149,10 @@ Core plugins are Rust and ship with the app. Turn them off in **Settings → Plu
 | Date and time | Inserts the current date or time |
 | Theme gallery | Nord, Rosé Pine, Catppuccin, and Paper |
 | Sync | Syncs the vault with a server you host |
+| PDF Reader | Opens `.pdf` files from the vault with scrollable pages |
+| Image Reader | Opens PNG, JPEG, GIF, WebP, SVG, BMP, TIFF, and ICO files from the vault |
 
-Community plugins are JavaScript, installed like Obsidian's. Each one is a folder in `.notia/plugins`, or a link there to a folder elsewhere, with a `manifest.json` and a `main.js`. Notia lists a plugin from its manifest and loads the code only after you enable it. Turning it off unloads it. Saving its files reloads it, including through a link. The API is in `crates/notia-js/notia.d.ts`, and Notia copies that file to `.notia/plugins/notia.d.ts` for editor completions.
+Community plugins are JavaScript, installed like Obsidian's. Each one is a folder in `.notia/plugins`, or a link there to a folder elsewhere, with a `manifest.json` and a `main.js`. Notia lists a plugin from its manifest and loads the code only after you enable it. Turning it off unloads it. Saving its files reloads it, including through a link. The API is in `crates/notia-js/notia.d.ts`, and Notia copies that file to `.notia/plugins/notia.d.ts` for editor completions. See [docs/plugins.md](docs/plugins.md) for the full manifest schema, JavaScript API, lifecycle, and packaging guide.
 
 ```js
 import { Plugin, Notice, ui } from "notia";
@@ -222,15 +224,22 @@ To add one, put a folder with a `theme.json` (or a single `.json` file) in `.not
 | `notia-plugin` | The plugin API |
 | `notia-workspace` | The window: ribbon, sidebars, tabs, palette, and settings |
 | `notia-plugins` | The core plugins and bundled themes |
+| `notia-pdf-reader` | Core plugin that views `.pdf` files from the vault |
+| `notia-image-reader` | Core plugin that views image files from the vault |
 | `notia-sync` | Vault sync, and the server you host |
 | `notia-js` | Community plugins, run in QuickJS |
+| `notia-android` | Vault, search, and sync library (`libnotia_android`) for the Android app |
 
 The interface is [GPUI](https://gpui.rs) through [gpui-kit](https://crates.io/crates/gpui-kit).
 
 ```
-cargo test
+cargo fmt --all --check
+cargo clippy --workspace --all-targets
+cargo test --workspace
 cargo test -p notia --test screenshots   # renders the main screens to PNGs; needs a GPU
 ```
+
+CI runs `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, and `cargo test --workspace` on Linux, macOS, and Windows after `bash scripts/fetch-gpui-component.sh`. On Linux, headless UI tests need a Vulkan driver (`mesa-vulkan-drivers` on Debian and Ubuntu).
 
 Set `RUST_LOG` to change logging. The default filter is `warn,notia=info`.
 

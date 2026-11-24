@@ -396,7 +396,9 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
         if two_pane {
             h_flex()
                 .w_full()
+                .h_full()
                 .min_h(px(360.))
+                .min_h_0()
                 .child(list_pane)
                 .child(detail_pane)
                 .into_any_element()
@@ -407,13 +409,15 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
 
     v_flex()
         .w_full()
+        .h_full()
+        .min_h_0()
         .gap_2()
         .children(loader_banner)
         .child(toolbar)
         .when_some(count_text, |this, line| {
             this.child(div().text_xs().text_color(muted).child(line))
         })
-        .child(div().w_full().flex_1().child(container_query(store)))
+        .child(div().w_full().flex_1().min_h_0().child(container_query(store)))
         .into_any_element()
 }
 
@@ -661,6 +665,8 @@ fn render_list_pane(
 fn plugin_list_shell(border: Hsla, body: impl IntoElement) -> AnyElement {
     v_flex()
         .w_72()
+        .h_full()
+        .min_h_0()
         .flex_shrink_0()
         .border_r_1()
         .border_color(border)
@@ -1015,12 +1021,13 @@ fn render_detail(
 
     v_flex()
         .flex_1()
+        .h_full()
+        .min_h_0()
         .min_w(px(360.))
         .min_w_0()
         .px_4()
         .py_3()
         .gap_3()
-        .overflow_y_scrollbar()
         .when(narrow, |panel| {
             panel.child(
                 Button::new("plugin-store-back")
@@ -1038,14 +1045,22 @@ fn render_detail(
             )
         })
         .child(header)
-        .child(readme_view(
-            &entry.id,
-            readme,
-            state.clone(),
-            entry.clone(),
-            muted,
-            danger,
-        ))
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scrollbar()
+                .child(readme_view(
+                    &entry.id,
+                    readme,
+                    state.clone(),
+                    entry.clone(),
+                    muted,
+                    danger,
+                )),
+        )
 }
 
 fn readme_view(
@@ -1057,11 +1072,18 @@ fn readme_view(
     danger: Hsla,
 ) -> AnyElement {
     match readme {
-        Some(ReadmeBody::Ready(text)) => TextView::markdown(
-            SharedString::from(format!("plugin-readme-{id}")),
-            text.clone(),
-        )
-        .into_any_element(),
+        Some(ReadmeBody::Ready(text)) => div()
+            .w_full()
+            .min_w_0()
+            .child(
+                TextView::markdown(
+                    SharedString::from(format!("plugin-readme-{id}")),
+                    text.clone(),
+                )
+                .scrollable(false)
+                .w_full(),
+            )
+            .into_any_element(),
         Some(ReadmeBody::Missing) => div()
             .text_sm()
             .text_color(muted)

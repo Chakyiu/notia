@@ -67,7 +67,37 @@ tasks.register<Exec>("buildNotiaRust") {
     group = "build"
     description = "Compile the Notia vault library for Android."
     workingDir = rootProject.projectDir.parentFile
-    commandLine("bash", "scripts/package-android.sh")
+    val shell =
+        if (System.getProperty("os.name").lowercase().contains("windows")) {
+            val gitBash = File("C:/Program Files/Git/bin/bash.exe")
+            if (gitBash.isFile) gitBash.absolutePath else "bash"
+        } else {
+            "bash"
+        }
+    commandLine(shell, "scripts/package-android.sh")
+    val localAppData = System.getenv("LOCALAPPDATA")
+    if (localAppData != null) {
+        environment("LOCALAPPDATA", localAppData)
+    }
+    val sdk =
+        System.getenv("ANDROID_HOME")
+            ?: System.getenv("ANDROID_SDK_ROOT")
+            ?: localAppData?.let { "$it\\Android\\Sdk" }
+    if (sdk != null) {
+        environment("ANDROID_HOME", sdk)
+        if (System.getenv("ANDROID_NDK_HOME") != null) {
+            environment("ANDROID_NDK_HOME", System.getenv("ANDROID_NDK_HOME")!!)
+        } else {
+            val ndkRoot = file("$sdk/ndk")
+            if (ndkRoot.isDirectory) {
+                ndkRoot
+                    .listFiles()
+                    ?.filter { it.isDirectory }
+                    ?.maxByOrNull { it.name }
+                    ?.let { environment("ANDROID_NDK_HOME", it.absolutePath) }
+            }
+        }
+    }
 }
 
 tasks.named("preBuild").configure {

@@ -13,6 +13,11 @@ pub struct NoteMeta {
     pub tags: Vec<String>,
     /// Alternative names from the `aliases` frontmatter field.
     pub aliases: Vec<String>,
+    /// Whether AI tools may read and write this note.
+    ///
+    /// Locked unless YAML frontmatter contains `unlocked: true`. Any other
+    /// value, including a missing field, stays locked.
+    pub unlocked: bool,
     pub word_count: usize,
     pub char_count: usize,
 }
@@ -54,6 +59,8 @@ pub struct Link {
 /// This is a line scanner, not a full CommonMark parser: it understands
 /// frontmatter, fenced code blocks, ATX headings, inline code spans,
 /// wikilinks, Markdown links and tags, which is what the index needs.
+/// Frontmatter `unlocked: true` sets [`NoteMeta::unlocked`]. Anything else
+/// leaves the note locked.
 pub fn parse_note(text: &str) -> NoteMeta {
     let mut parser = Parser::default();
     let lines: Vec<&str> = text.lines().collect();
@@ -149,6 +156,7 @@ impl Parser {
                 }
             }
             "aliases" | "alias" => self.meta.aliases.push(value.to_string()),
+            "unlocked" => self.meta.unlocked = value.eq_ignore_ascii_case("true"),
             _ => {}
         }
     }
@@ -556,6 +564,18 @@ mod tests {
         assert_eq!(meta.aliases, vec!["Plan", "Road map"]);
         assert_eq!(meta.headings[0].line, 6);
         assert_eq!(meta.word_count, 2);
+    }
+
+    #[test]
+    fn notes_stay_locked_unless_frontmatter_opts_in() {
+        assert!(!parse_note("# Hello\nunlocked: true").unlocked);
+        assert!(!parse_note("---\nunlocked: false\n---\n").unlocked);
+        assert!(!parse_note("---\nunlocked: \"yes\"\n---\n").unlocked);
+        assert!(parse_note("---\nunlocked: true\n---\n# Hi").unlocked);
+        assert!(parse_note("---\nUnlocked: \"True\"\n---\n").unlocked);
+        let meta = parse_note("---\nunlocked: true\n---\n# Hi");
+        assert!(meta.tags.is_empty());
+        assert!(meta.unlocked);
     }
 
     #[test]

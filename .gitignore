@@ -4,6 +4,7 @@
 .DS_Store
 /dev
 docker/sync/.env
+docker/mcp/.env
 android/.gradle
 android/build
 android/app/build

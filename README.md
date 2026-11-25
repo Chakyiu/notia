@@ -208,6 +208,56 @@ The first run writes a token to `notia-sync-data/token` and prints it. In **Sett
 
 The token is the only password. Bind the server to a private network, or put HTTPS in front of it. Notia trusts the certificates of the system it runs on.
 
+## MCP
+
+`notia-mcp` is a server you run so an MCP client can read and write notes in a vault on this computer. Notes are locked by default. A note is unlocked only when its frontmatter contains `unlocked: true`. Locked notes are left out of listings. Reading or writing them returns an error and does not include their contents. The server does not create notes, and a write has to keep the `unlocked: true` line.
+
+```yaml
+---
+unlocked: true
+---
+# Visible to the assistant
+```
+
+```
+cargo run -p notia-mcp -- --vault ~/Notes --token "$NOTIA_MCP_TOKEN"
+cargo build -p notia-mcp --release
+```
+
+`--vault` is the vault folder (`NOTIA_MCP_VAULT` is the same setting). `--listen` defaults to `127.0.0.1:8788`. The token comes from `--token` or `NOTIA_MCP_TOKEN`. `--stdio` speaks MCP on stdin and stdout instead of opening a port, and does not use the token: the process you start is the boundary.
+
+The tools are `list_notes`, `read_note`, and `write_note`. `GET /v1/health` needs no token. MCP messages are `POST /mcp` (streamable HTTP). Send the token as `Authorization: Bearer <token>`.
+
+```json
+{
+  "mcpServers": {
+    "notia": {
+      "url": "http://127.0.0.1:8788/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      }
+    }
+  }
+}
+```
+
+To spawn the process instead:
+
+```json
+{
+  "mcpServers": {
+    "notia": {
+      "command": "notia-mcp",
+      "args": ["--stdio", "--vault", "/path/to/vault"]
+    }
+  }
+}
+```
+
+`docker/mcp` is a Compose example. Copy `.env.example` to `.env`, set `NOTIA_MCP_TOKEN` and `NOTIA_VAULT`, and run `docker compose up --build -d` from that directory. The vault directory is mounted into the container.
+
+The token is the only password. The default bind is localhost. Anyone who can reach the address and knows the token can read and change unlocked notes. Put HTTPS in front of the process if you publish the port.
+
 ## Themes
 
 A theme sets the interface colors, syntax colors, fonts, corner radii, and note typography. The built-in themes are Notia, Nord, Rosé Pine, Catppuccin, and Paper. Pick one in **Settings → Appearance**, or with **Change theme**, which previews each theme as you move through the list.
@@ -227,6 +277,7 @@ To add one, put a folder with a `theme.json` (or a single `.json` file) in `.not
 | `notia-pdf-reader` | Core plugin that views `.pdf` files from the vault |
 | `notia-image-reader` | Core plugin that views image files from the vault |
 | `notia-sync` | Vault sync, and the server you host |
+| `notia-mcp` | MCP server for unlocked notes in a vault |
 | `notia-js` | Community plugins, run in QuickJS |
 | `notia-android` | Vault, search, and sync library (`libnotia_android`) for the Android app |
 

@@ -59,7 +59,8 @@ if ! rustup target list --installed | grep -qx "$triple"; then
     rustup target add "$triple"
 fi
 
-echo "Building Notia for $triple…"
+# Braces: macOS /bin/bash 3.2 treats the ellipsis as part of $triple.
+echo "Building Notia for ${triple}…"
 IPHONEOS_DEPLOYMENT_TARGET=15.0 \
     cargo build -p notia --release --target "$triple"
 
@@ -71,10 +72,13 @@ cp "$target_dir/$triple/release/notia" "$app/notia"
 cp "$root/mobile/ios/Info.plist" "$app/Info.plist"
 # Stamp the built bundle so the app's version always matches the release,
 # even when the committed plist has fallen behind.
-if command -v xcrun >/dev/null 2>&1; then
+# PlistBuddy lives in /usr/libexec. Xcode 27's xcrun no longer finds it.
+if [[ -x /usr/libexec/PlistBuddy ]]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Info.plist"
+elif xcrun --find PlistBuddy >/dev/null 2>&1; then
     xcrun PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Info.plist"
 else
-    printf 'package-ios: xcrun is unavailable, keeping the Info.plist version\n' >&2
+    printf 'package-ios: PlistBuddy is unavailable, keeping the Info.plist version\n' >&2
 fi
 codesign --force --sign - "$app"
 printf 'Built %s\n' "$app"

@@ -174,11 +174,14 @@ impl Workspace {
         };
         let theme = cx.theme();
         let (sidebar, border) = (theme.sidebar, theme.sidebar_border);
+        // Fixed height: the horizontal scroller's wrapper is height 100%
+        // unless this row sets one, which covers the file list and tab bar.
         h_flex()
             .flex_none()
             .w_full()
+            .h(px(40.))
             .px_2()
-            .py_1()
+            .items_center()
             .bg(sidebar)
             .border_b_1()
             .border_color(border)
@@ -189,23 +192,31 @@ impl Workspace {
     fn render_phone_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active_tab;
         let sidebar = cx.theme().sidebar;
-        div().w_full().overflow_x_scrollbar().bg(sidebar).child(
-            h_flex()
-                .gap_1()
-                .px_2()
-                .pb_1()
-                .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
-                    let title = tab.document.title(cx);
-                    Button::new(("phone-tab", ix))
-                        .label(title)
-                        .ghost()
-                        .small()
-                        .selected(active == Some(ix))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.activate_tab(ix, window, cx);
-                        }))
-                })),
-        )
+        // Fixed height: the horizontal scroller's wrapper is height 100%
+        // unless this row sets one, and then it covers the note.
+        div()
+            .w_full()
+            .h(px(36.))
+            .flex_none()
+            .overflow_x_scrollbar()
+            .bg(sidebar)
+            .child(
+                h_flex()
+                    .gap_1()
+                    .px_2()
+                    .pb_1()
+                    .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
+                        let title = tab.document.title(cx);
+                        Button::new(("phone-tab", ix))
+                            .label(title)
+                            .ghost()
+                            .small()
+                            .selected(active == Some(ix))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.activate_tab(ix, window, cx);
+                            }))
+                    })),
+            )
     }
 
     fn render_phone_note(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -229,14 +240,19 @@ impl Workspace {
             .and_then(|id| self.panel_views.get(id))
             .map(|(_, view)| view.clone());
         let missing = view.is_none();
+        // The list is virtualized, so it needs a bounded height the way the
+        // desktop sidebar gives it one.
         div().size_full().bg(sidebar).text_color(foreground).child(
-            v_flex()
-                .size_full()
-                .overflow_hidden()
-                .when(missing, |column| {
-                    column.child(self.panel_placeholder(placement, cx))
-                })
-                .children(view),
+            v_flex().size_full().overflow_hidden().child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .children(view)
+                    .when(missing, |body| {
+                        body.child(self.panel_placeholder(placement, cx))
+                    }),
+            ),
         )
     }
 

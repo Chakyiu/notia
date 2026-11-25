@@ -10,6 +10,17 @@
 
 set -euo pipefail
 
+# Git Bash on Windows passes SDK paths as C:\...; cygpath makes -d tests work.
+if command -v cygpath >/dev/null 2>&1; then
+    for var in ANDROID_NDK_HOME ANDROID_NDK_ROOT ANDROID_HOME ANDROID_SDK_ROOT LOCALAPPDATA; do
+        if [[ -n "${!var:-}" ]]; then
+            if u="$(cygpath -u "${!var}" 2>/dev/null)"; then
+                export "$var=$u"
+            fi
+        fi
+    done
+fi
+
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
@@ -31,6 +42,9 @@ find_ndk() {
     if [[ -z "$sdk" && -d "$HOME/Library/Android/sdk" ]]; then
         sdk="$HOME/Library/Android/sdk"
     fi
+    if [[ -z "$sdk" && -n "${LOCALAPPDATA:-}" && -d "$LOCALAPPDATA/Android/Sdk" ]]; then
+        sdk="$LOCALAPPDATA/Android/Sdk"
+    fi
     if [[ -n "$sdk" && -d "$sdk/ndk" ]]; then
         find "$sdk/ndk" -mindepth 1 -maxdepth 1 -type d | sort | tail -1
         return
@@ -42,11 +56,12 @@ ndk="$(find_ndk || true)"
 [[ -n "$ndk" && -d "$ndk" ]] || die "Android NDK not found. Install it from the SDK manager and set ANDROID_NDK_HOME."
 
 prebuilt=""
-for host in darwin-arm64 darwin-x86_64 linux-x86_64 linux-aarch64; do
-    if [[ -x "$ndk/toolchains/llvm/prebuilt/$host/bin/clang" ]]; then
-        prebuilt="$ndk/toolchains/llvm/prebuilt/$host"
-        break
-    fi
+for host in darwin-arm64 darwin-x86_64 linux-x86_64 linux-aarch64 windows-x86_64; do
+  toolroot="$ndk/toolchains/llvm/prebuilt/$host"
+  if [[ -x "$toolroot/bin/clang" || -f "$toolroot/bin/clang.cmd" ]]; then
+    prebuilt="$toolroot"
+    break
+  fi
 done
 [[ -n "$prebuilt" ]] || die "no LLVM toolchain under $ndk"
 
@@ -59,7 +74,13 @@ build_one() {
     local prefix="$3"
     local clang="$prebuilt/bin/${prefix}${api}-clang"
     local ar="$prebuilt/bin/llvm-ar"
-    [[ -x "$clang" ]] || die "missing $clang"
+    if [[ -f "${clang}.cmd" ]]; then
+        clang="${clang}.cmd"
+    fi
+    if [[ -f "${ar}.cmd" ]]; then
+        ar="${ar}.cmd"
+    fi
+    [[ -x "$clang" || -f "$clang" ]] || die "missing $clang"
     if ! rustup target list --installed | grep -qx "$triple"; then
         rustup target add "$triple"
     fi

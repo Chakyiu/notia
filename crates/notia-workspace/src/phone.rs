@@ -2,16 +2,17 @@
 //! keyboard left clear. The desktop window keeps its sidebars.
 
 use gpui_kit::component::{
+    ActiveTheme as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     scroll::ScrollableElement as _,
-    v_flex, ActiveTheme as _, IconName, Selectable as _, Sizable as _,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use notia_plugin::{
-    actions::{NewNote, OpenSettings, WORKSPACE_CONTEXT},
     PanelPlacement,
+    actions::{NewNote, OpenSettings, WORKSPACE_CONTEXT},
 };
 
 use super::Workspace;

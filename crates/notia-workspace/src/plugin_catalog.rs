@@ -323,31 +323,6 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
                 .and_then(|catalog| catalog.entries.iter().find(|entry| entry.id == id))
         });
         let two_pane = content_size.width >= TWO_PANE_MIN_WIDTH;
-        let narrow_detail = !two_pane && selected_entry.is_some();
-
-        if narrow_detail {
-            let Some(entry) = selected_entry else {
-                return div().into_any_element();
-            };
-            let control = entry_control(entry, &plugins_dir, cx);
-            return render_detail(
-                entry,
-                readmes.get(&entry.id),
-                control,
-                busy.as_deref() == Some(entry.id.as_str()),
-                controls_disabled,
-                control_size,
-                &state,
-                plugins_dir.clone(),
-                border,
-                muted,
-                danger,
-                true,
-                install_errors.get(&entry.id).map(String::as_str),
-                cx,
-            )
-            .into_any_element();
-        }
 
         let list_pane = render_list_pane(
             catalog_for_layout.as_ref(),
@@ -393,7 +368,7 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
             detail_placeholder(muted)
         };
 
-        if two_pane {
+        if two_pane || selected_entry.is_some() {
             h_flex()
                 .w_full()
                 .h_full()

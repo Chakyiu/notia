@@ -210,7 +210,7 @@ The token is the only password. Bind the server to a private network, or put HTT
 
 ## MCP
 
-`notia-mcp` is a server you run so an MCP client can read and write notes in a vault on this computer. Notes are locked by default. A note is unlocked only when its frontmatter contains `unlocked: true`. Locked notes are left out of listings. Reading or writing them returns an error and does not include their contents. The server does not create notes, and a write has to keep the `unlocked: true` line.
+`notia-mcp` is a server you run so an MCP client can read and write notes in a vault on this computer. Notes are locked by default. A note is unlocked only when its frontmatter contains `unlocked: true`. Locked notes are left out of listings. Reading or writing them returns an error and does not include their contents. The server does not create notes, and a write has to keep the `unlocked: true` line. See [docs/mcp.md](docs/mcp.md) for CLI flags, environment variables, hosting alongside `notia-sync-server`, unlocked-note rules, and security notes.
 
 ```yaml
 ---
@@ -220,11 +220,14 @@ unlocked: true
 ```
 
 ```
-cargo run -p notia-mcp -- --vault ~/Notes --token "$NOTIA_MCP_TOKEN"
+export NOTIA_MCP_TOKEN="YOUR_TOKEN"
+cargo run -p notia-mcp -- --vault ~/Notes
 cargo build -p notia-mcp --release
 ```
 
-`--vault` is the vault folder (`NOTIA_MCP_VAULT` is the same setting). `--listen` defaults to `127.0.0.1:8788`. The token comes from `--token` or `NOTIA_MCP_TOKEN`. `--stdio` speaks MCP on stdin and stdout instead of opening a port, and does not use the token: the process you start is the boundary.
+`--vault` is the vault folder (`NOTIA_MCP_VAULT` is the same setting). `--listen` defaults to `127.0.0.1:8788`. The token comes from `NOTIA_MCP_TOKEN` or `--token` (prefer `NOTIA_MCP_TOKEN`, since command-line arguments are visible in process listings). `--stdio` speaks MCP on stdin and stdout instead of opening a port, and does not use the token: the process you start is the boundary.
+
+If you also run `notia-sync-server`, point `notia-mcp` at a vault folder synced by the Notia app—never at `notia-sync-server`'s internal `notia-sync-data/vaults/<id>/files` directory, which bypasses sync manifest tracking.
 
 The tools are `list_notes`, `read_note`, and `write_note`. `GET /v1/health` needs no token. MCP messages are `POST /mcp` (streamable HTTP). Send the token as `Authorization: Bearer <token>`.
 
@@ -254,7 +257,7 @@ To spawn the process instead:
 }
 ```
 
-`docker/mcp` is a Compose example. Copy `.env.example` to `.env`, set `NOTIA_MCP_TOKEN` and `NOTIA_VAULT`, and run `docker compose up --build -d` from that directory. The vault directory is mounted into the container.
+`docker/mcp` is a Compose example. Run `bash scripts/fetch-gpui-component.sh` from the repository root first, copy `docker/mcp/.env.example` to `.env`, set `NOTIA_MCP_TOKEN` and `NOTIA_VAULT` (plus `NOTIA_UID` and `NOTIA_GID` on Linux), and run `docker compose up --build -d` from `docker/mcp`. The vault directory is mounted into the container.
 
 The token is the only password. The default bind is localhost. Anyone who can reach the address and knows the token can read and change unlocked notes. Put HTTPS in front of the process if you publish the port.
 

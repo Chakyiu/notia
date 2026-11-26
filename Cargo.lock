@@ -4578,6 +4578,7 @@ dependencies = [
 name = "notia-mcp"
 version = "0.2.14"
 dependencies = [
+ "chrono",
  "notia-core",
  "serde_json",
  "tempfile",

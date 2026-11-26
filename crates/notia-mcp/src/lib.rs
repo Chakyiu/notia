@@ -6,6 +6,7 @@
 //! their contents. The process can speak streamable HTTP, the same shape of
 //! host as `notia-sync-server`, or MCP on stdin and stdout.
 
+mod audit;
 mod gate;
 mod rpc;
 mod serve;

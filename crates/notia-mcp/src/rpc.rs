@@ -1,19 +1,22 @@
 //! JSON-RPC messages for MCP tools.
 //!
-//! The server advertises three tools: `list_notes`, `read_note`, and
-//! `write_note`. A tool failure is a normal result with `isError: true`, so
-//! the client shows the lock error and not a protocol failure.
+//! The server advertises four tools: `list_notes`, `read_note`, `write_note`,
+//! and `list_audit`. A tool failure is a normal result with `isError: true`, so
+//! the client shows the lock error and not a protocol failure. Each call is
+//! recorded in the vault audit log.
 
 use serde_json::{Value, json};
 
-use crate::gate::Host;
+use crate::{audit, gate::Host};
 
 const INSTRUCTIONS: &str = "\
 You can read and write Markdown notes only when the user has unlocked them. \
 A note is unlocked when YAML frontmatter at the top of the file contains \
 `unlocked: true`. Other files are locked: do not guess paths, and do not try \
 to reveal them. When you write a note, keep the `unlocked: true` frontmatter \
-line. You cannot create new notes with these tools.";
+line. You cannot create new notes with these tools. Every tool call is written \
+to an audit log. When the user asks what you did or are doing, call list_audit \
+and show the time, action, target, and status of each row.";
 
 const PROTOCOL: &str = "2025-03-26";
 const PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
@@ -117,6 +120,19 @@ fn tools() -> Value {
                 },
                 "required": ["path", "content"]
             }
+        },
+        {
+            "name": "list_audit",
+            "description": "List recent AI actions on this vault. Each row has time (UTC), action (the tool name), target (a note path, vault, or audit), and status. status is started while the call is still running, then ok or error. Note contents are never included.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "How many recent rows to return, from 1 to 200. Defaults to 50."
+                    }
+                }
+            }
         }
     ])
 }
@@ -128,17 +144,60 @@ fn tools_call(host: &Host, id: &Value, params: &Value) -> Value {
     let args = match params.get("arguments") {
         None => json!({}),
         Some(value) if value.is_object() => value.clone(),
-        Some(_) => return error_response(Some(id), -32602, "arguments must be an object"),
+        Some(_) => {
+            audit::commit(
+                host.root(),
+                name,
+                "",
+                "error",
+                Some("arguments must be an object"),
+            );
+            return error_response(Some(id), -32602, "arguments must be an object");
+        }
     };
+    let target = audit_target(name, &args);
+    let known = matches!(
+        name,
+        "list_notes" | "read_note" | "write_note" | "list_audit"
+    );
+    if !known {
+        audit::commit(host.root(), name, &target, "error", Some("unknown tool"));
+        return error_response(Some(id), -32602, "unknown tool");
+    }
+    // list_audit reads the log. Marking it started first would make the row
+    // it returns look like the call is still running.
+    if name != "list_audit" {
+        audit::begin(host.root(), name, &target);
+    }
     let outcome = match name {
         "list_notes" => list_notes(host),
         "read_note" => read_note(host, &args),
         "write_note" => write_note(host, &args),
-        _ => return error_response(Some(id), -32602, "unknown tool"),
+        "list_audit" => list_audit(host, &args),
+        _ => unreachable!(),
     };
+    let error = match &outcome {
+        Ok(_) => None,
+        Err(message) => Some(message.as_str()),
+    };
+    let status = if error.is_none() { "ok" } else { "error" };
+    audit::commit(host.root(), name, &target, status, error);
     match outcome {
         Ok(text) => success(id, tool_result(&text, false)),
         Err(message) => success(id, tool_result(&message, true)),
+    }
+}
+
+fn audit_target(name: &str, args: &Value) -> String {
+    match name {
+        "read_note" | "write_note" => args
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        "list_notes" => "vault".to_string(),
+        "list_audit" => "audit".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -154,6 +213,18 @@ fn list_notes(host: &Host) -> Result<String, String> {
 fn read_note(host: &Host, args: &Value) -> Result<String, String> {
     let path = required_str(args, "path")?;
     host.read_note(path).map_err(|error| error.to_string())
+}
+
+fn list_audit(host: &Host, args: &Value) -> Result<String, String> {
+    let limit = match args.get("limit") {
+        None | Some(Value::Null) => 50u64,
+        Some(Value::Number(number)) => number.as_u64().unwrap_or(0),
+        Some(_) => 0,
+    };
+    if !(1..=200).contains(&limit) {
+        return Err("limit must be a whole number from 1 to 200".into());
+    }
+    audit::recent(host.root(), limit as usize)
 }
 
 fn write_note(host: &Host, args: &Value) -> Result<String, String> {
@@ -248,7 +319,10 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["list_notes", "read_note", "write_note"]);
+        assert_eq!(
+            names,
+            vec!["list_notes", "read_note", "write_note", "list_audit"]
+        );
     }
 
     #[test]
@@ -359,6 +433,119 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("path is required")
+        );
+    }
+
+    #[test]
+    fn audit_records_calls_without_note_text() {
+        let vault = test_vault(1024);
+        let body = format!("---\nunlocked: true\n---\n# Open\n{}\n", vault.secret);
+        let wrote = call(
+            &vault.host,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "write_note",
+                    "arguments": { "path": "open.md", "content": body }
+                }
+            }),
+        );
+        assert_eq!(wrote["result"]["isError"], false);
+
+        let locked = call(
+            &vault.host,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "read_note",
+                    "arguments": { "path": "locked.md" }
+                }
+            }),
+        );
+        assert_eq!(locked["result"]["isError"], true);
+
+        let listed = call(
+            &vault.host,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": { "name": "list_notes", "arguments": {} }
+            }),
+        );
+        assert_eq!(listed["result"]["isError"], false);
+
+        let audit = call(
+            &vault.host,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": { "name": "list_audit", "arguments": { "limit": 20 } }
+            }),
+        );
+        assert_eq!(audit["result"]["isError"], false);
+        let text = audit["result"]["content"][0]["text"].as_str().unwrap();
+        let rows: Vec<Value> = serde_json::from_str(text).unwrap();
+        assert!(rows.iter().any(|row| {
+            row["action"] == "write_note" && row["target"] == "open.md" && row["status"] == "ok"
+        }));
+        assert!(rows.iter().any(|row| {
+            row["action"] == "read_note"
+                && row["target"] == "locked.md"
+                && row["status"] == "error"
+                && row["error"] == "note is locked"
+        }));
+        assert!(
+            rows.iter()
+                .any(|row| row["action"] == "list_notes" && row["target"] == "vault")
+        );
+        assert!(rows.iter().all(|row| {
+            let time = row["time"].as_str().unwrap();
+            row["status"] != "started" && time.contains('T') && time.ends_with('Z')
+        }));
+        assert!(!text.contains(vault.secret));
+
+        let file = std::fs::read_to_string(vault.dir.path().join(".notia").join("mcp-audit.jsonl"))
+            .unwrap();
+        assert!(file.contains("\"action\":\"list_audit\""));
+        assert!(file.contains("\"status\":\"ok\""));
+        assert!(!file.contains(vault.secret));
+        assert!(!file.contains("started"));
+        let hidden = call(
+            &vault.host,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "read_note",
+                    "arguments": { "path": ".notia/mcp-audit.jsonl" }
+                }
+            }),
+        );
+        assert_eq!(hidden["result"]["isError"], true);
+        assert!(!hidden.to_string().contains(vault.secret));
+
+        let bad_limit = call(
+            &vault.host,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": { "name": "list_audit", "arguments": { "limit": 0 } }
+            }),
+        );
+        assert_eq!(bad_limit["result"]["isError"], true);
+        assert!(
+            bad_limit["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("limit must be a whole number")
         );
     }
 }

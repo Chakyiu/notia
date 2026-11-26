@@ -18,7 +18,7 @@
 
 | Property | `notia-sync-server` | `notia-mcp` |
 | --- | --- | --- |
-| Purpose | Two-way vault sync for Notia apps | MCP tools (`list_notes`, `read_note`, `write_note`) for AI clients |
+| Purpose | Two-way vault sync for Notia apps | MCP tools (`list_notes`, `read_note`, `write_note`, `list_audit`) for AI clients |
 | Transports | HTTP | Streamable HTTP (`POST /mcp`) or `--stdio` |
 | Default `--listen` | `0.0.0.0:8787` | `127.0.0.1:8788` |
 | Target folder flag | `--data DIR` (default `./notia-sync-data`) | `--vault DIR` or `NOTIA_MCP_VAULT` (required, must exist) |
@@ -121,7 +121,7 @@ Required HTTP request headers on `POST /mcp`:
 - `Accept` (if sent) must allow `application/json`, `text/event-stream`, `application/*`, `text/*`, or `*/*`.
 - `Origin` (when sent by a browser) must use `http://` or `https://` on `localhost`, `127.0.0.1`, or `[::1]`; any other `Origin` returns `403`.
 
-Access logs go to `stderr` as `notia-mcp: <METHOD> <PATH> <STATUS>` without tokens or note contents.
+Access logs go to `stderr` as `notia-mcp: <METHOD> <PATH> <STATUS>` without tokens or note contents. Tool activity is also logged there as `notia-mcp: audit <action> <target> <status>`.
 
 ### Stdio mode
 
@@ -225,13 +225,14 @@ Exact parser rules (`crates/notia-core/src/note.rs` and `crates/notia-mcp/src/ga
 
 ### Exposed MCP tools
 
-`notia-mcp` implements MCP protocol versions `2024-11-05`, `2025-03-26` (default), and `2025-06-18`, and exposes three tools (`crates/notia-mcp/src/rpc.rs`):
+`notia-mcp` implements MCP protocol versions `2024-11-05`, `2025-03-26` (default), and `2025-06-18`, and exposes four tools (`crates/notia-mcp/src/rpc.rs`):
 
 | Tool | Arguments | Behavior |
 | --- | --- | --- |
 | `list_notes` | `{}` | Returns a JSON array of `{"path", "title"}` for unlocked `.md` notes under `--max-bytes`. Locked notes, hidden folders, non-`.md` files, symlinks, and oversized files are omitted. |
 | `read_note` | `{"path": "..."}` | Returns the full raw Markdown text of an unlocked note, including its frontmatter. |
 | `write_note` | `{"path": "...", "content": "..."}` | Atomically replaces an existing unlocked `.md` note. Cannot create new notes, cannot write locked notes, and refuses content that removes or invalidates `unlocked: true`. |
+| `list_audit` | `{}` or `{"limit": 50}` | Returns the newest audit rows (default 50, maximum 200) as JSON. `limit` must be a whole number from 1 to 200. |
 
 Paths are vault-relative (e.g. `Daily/Today.md`; both `/` and `\` separators are accepted and normalized). Tool errors return normal MCP results with `isError: true`:
 
@@ -239,6 +240,31 @@ Paths are vault-relative (e.g. `Daily/Today.md`; both `/` and `\` separators are
 - `note is not available` — file is missing, hidden, non-Markdown, a symlink, outside the vault root, or uses an invalid path (`..`, absolute paths, drive colons, control chars, empty segments).
 - `note is larger than the server allows` — file or write payload exceeds `--max-bytes`.
 - ``the note must stay unlocked; keep `unlocked: true` in its frontmatter`` — `write_note` tried to remove `unlocked: true`.
+- `limit must be a whole number from 1 to 200` — `list_audit` was given a bad `limit`.
+
+### Audit log
+
+Every tool call is recorded in `<vault>/.notia/mcp-audit.jsonl`, one JSON object per line, and mirrored to stderr. The file is hidden from `list_notes`, `read_note`, and `write_note`. The log keeps the newest 400 rows.
+
+Each row has:
+
+| Field | Meaning |
+| --- | --- |
+| `time` | UTC timestamp when the call started (or when it was recorded, for `list_audit`) |
+| `action` | Tool name, such as `write_note` |
+| `target` | Note path, `vault` for `list_notes`, or `audit` for `list_audit` |
+| `status` | `started` while the call is running, then `ok` or `error` |
+| `error` | Present only when `status` is `error` |
+
+Note contents are never written to the log. A `started` row that never becomes `ok` or `error` means the process stopped mid-call. `list_audit` reads the log and then appends its own row, so that row shows up the next time you list the audit.
+
+```sh
+curl -fsS -X POST http://127.0.0.1:8788/mcp \
+  -H "Authorization: Bearer $NOTIA_MCP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_audit","arguments":{"limit":20}}}'
+```
 
 ---
 
@@ -311,7 +337,7 @@ printf '%s\n' \
 
 ## 7. Security notes
 
-- **The token is the only credential on HTTP.** Anyone who can reach the bind address and knows the token can list, read, and overwrite every unlocked note in the vault.
+- **The token is the only credential on HTTP.** Anyone who can reach the bind address and knows the token can list, read, and overwrite every unlocked note in the vault. The same token can call `list_audit` and read `.notia/mcp-audit.jsonl` on disk. That log stores tool names, note paths, and error text, not note contents.
 - **Prefer `NOTIA_MCP_TOKEN` over `--token`.** Command-line arguments passed via `--token` can be read from process listings (`ps` on Unix, `Win32_Process` on Windows) by other local users. Set `NOTIA_MCP_TOKEN` in the environment (or `docker/mcp/.env`) instead.
 - **HTTP traffic is plaintext and unthrottled.** `--listen` defaults to `127.0.0.1:8788` (loopback only). There is no built-in TLS and no built-in rate limiting. If you publish the server beyond localhost (for example `--listen 0.0.0.0:8788`), bind only to a private network or place an HTTPS reverse proxy in front of `notia-mcp`.
 - **Browser Origin protection.** When an HTTP request includes an `Origin` header, `POST /mcp` allows only `http://` or `https://` origins for `localhost`, `127.0.0.1`, or `[::1]` and returns `403` for everything else (including `Origin: null`). Authentication is checked before the request body is buffered.

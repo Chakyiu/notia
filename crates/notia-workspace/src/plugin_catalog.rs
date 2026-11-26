@@ -118,6 +118,18 @@ enum StoreFilter {
 
 const TWO_PANE_MIN_WIDTH: Pixels = px(720.);
 
+/// Height of the list and detail panes.
+///
+/// The settings page measures this group with min-content, and `container_query`
+/// lays its children out only after that measurement. A percentage height
+/// collapses, the list's scroll clip stays at 0, and the rows never paint.
+/// Match the dialog body in `settings_dialog` (viewport minus 120, at most 680)
+/// and leave room for the page title, the group description, and the toolbar.
+fn store_pane_height(viewport_height: Pixels) -> Pixels {
+    let dialog = (viewport_height - px(120.)).min(px(680.));
+    (dialog - px(220.)).max(px(280.))
+}
+
 struct CatalogState {
     catalog: Option<Catalog>,
     error: Option<String>,
@@ -382,23 +394,16 @@ fn render_store(options: &RenderOptions, window: &mut Window, cx: &mut App) -> A
         }
     };
 
+    let pane_height = store_pane_height(window.viewport_size().height);
     v_flex()
         .w_full()
-        .h_full()
-        .min_h_0()
         .gap_2()
         .children(loader_banner)
         .child(toolbar)
         .when_some(count_text, |this, line| {
             this.child(div().text_xs().text_color(muted).child(line))
         })
-        .child(
-            div()
-                .w_full()
-                .flex_1()
-                .min_h_0()
-                .child(container_query(store)),
-        )
+        .child(div().w_full().h(pane_height).child(container_query(store)))
         .into_any_element()
 }
 
@@ -2336,8 +2341,10 @@ mod tests {
     use super::{
         CatalogEntry, FolderKind, RowControl, StoreFilter, archive_url, github_url,
         install_archive, installed_copies, manifest_url, matches_filter, matches_query,
-        parse_catalog, readme_url, remote_is_newer, row_plan, select_updates, uninstall_plugin,
+        parse_catalog, readme_url, remote_is_newer, row_plan, select_updates, store_pane_height,
+        uninstall_plugin,
     };
+    use gpui_kit::px;
 
     fn entry(branch: &str) -> CatalogEntry {
         CatalogEntry {
@@ -2622,5 +2629,13 @@ mod tests {
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].id, "daily-notes");
         assert_eq!(updates[0].available, "0.2.0");
+    }
+
+    #[test]
+    fn store_pane_keeps_a_height_inside_the_settings_dialog() {
+        // Tall window: dialog caps at 680, chrome above the panes is 220.
+        assert_eq!(store_pane_height(px(1600.)), px(460.));
+        // Short window: still tall enough for a few plugin rows.
+        assert_eq!(store_pane_height(px(500.)), px(280.));
     }
 }

@@ -4575,6 +4575,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "notia-mcp"
+version = "0.2.14"
+dependencies = [
+ "notia-core",
+ "serde_json",
+ "tempfile",
+ "tiny_http",
+]
+
+[[package]]
 name = "notia-pdf-reader"
 version = "0.2.14"
 dependencies = [

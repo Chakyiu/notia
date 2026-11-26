@@ -1,0 +1,19 @@
+[package]
+name = "notia-mcp"
+description = "MCP server for reading and writing unlocked Notia notes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "notia-mcp"
+path = "src/bin/notia-mcp.rs"
+
+[dependencies]
+notia-core.workspace = true
+serde_json.workspace = true
+tiny_http = "0.12"
+
+[dev-dependencies]
+tempfile = "3"

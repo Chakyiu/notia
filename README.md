@@ -229,7 +229,7 @@ cargo build -p notia-mcp --release
 
 If you also run `notia-sync-server`, point `notia-mcp` at a vault folder synced by the Notia app—never at `notia-sync-server`'s internal `notia-sync-data/vaults/<id>/files` directory, which bypasses sync manifest tracking.
 
-The tools are `list_notes`, `read_note`, and `write_note`. `GET /v1/health` needs no token. MCP messages are `POST /mcp` (streamable HTTP). Send the token as `Authorization: Bearer <token>`.
+The tools are `list_notes`, `read_note`, `write_note`, and `list_audit`. `list_audit` shows recent tool calls (time, action, target, and status) from `.notia/mcp-audit.jsonl`. `GET /v1/health` needs no token. MCP messages are `POST /mcp` (streamable HTTP). Send the token as `Authorization: Bearer <token>`.
 
 ```json
 {
